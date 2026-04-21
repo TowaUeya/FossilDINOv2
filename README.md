@@ -90,7 +90,16 @@ python -m src.visualize_embedding_space --emb data/embeddings/embeddings.npy --i
 
 6. ViT 根拠可視化
 ```bash
-python -m src.explain_vit_attention --renders data/renders --features data/features --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --specimen_id <ID> --out results/explain
+python -m src.explain_vit_attention \
+  --renders data/renders \
+  --features data/features \
+  --emb data/embeddings/embeddings.npy \
+  --ids data/embeddings/ids.txt \
+  --clusters results/baseline_cluster/clusters.csv \
+  --specimen_id xbox/xbox_0042 \
+  --out results/explain \
+  --image-size 518 \
+  --crop-size 518
 ```
 
 7. HDBSCAN tree 可視化
