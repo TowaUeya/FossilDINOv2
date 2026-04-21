@@ -56,8 +56,7 @@ def load_dinov2_model(model_name: str, device: torch.device) -> torch.nn.Module:
     return model
 
 
-def forward_embedding(model: torch.nn.Module, batch: torch.Tensor) -> torch.Tensor:
-    out = model.forward_features(batch)
+def _extract_embedding_tensor(out: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
     if isinstance(out, dict):
         if "x_norm_clstoken" in out:
             return out["x_norm_clstoken"]
@@ -66,3 +65,13 @@ def forward_embedding(model: torch.nn.Module, batch: torch.Tensor) -> torch.Tens
     if isinstance(out, torch.Tensor):
         return out
     raise RuntimeError("Unsupported model output format for embeddings")
+
+
+def forward_embedding(model: torch.nn.Module, batch: torch.Tensor, *, enable_grad: bool = False) -> torch.Tensor:
+    if enable_grad:
+        out = model.forward_features(batch)
+        return _extract_embedding_tensor(out)
+
+    with torch.inference_mode():
+        out = model.forward_features(batch)
+    return _extract_embedding_tensor(out)

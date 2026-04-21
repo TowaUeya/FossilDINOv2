@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -9,8 +10,10 @@ import torch
 import torch.nn.functional as F
 
 from src.utils.explain import attention_rollout, grad_attention_rollout, to_patch_heatmap
-from src.utils.io import ensure_dir, group_renders_by_specimen, list_image_files, load_ids, specimen_id_from_render
+from src.utils.io import ensure_dir, group_renders_by_specimen, list_image_files, load_ids
 from src.utils.vision import build_transform, forward_embedding, load_dinov2_model, load_image_tensor, resolve_device
+
+LOGGER = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +39,33 @@ def _collect_attn_modules(model: torch.nn.Module) -> list[torch.nn.Module]:
     return [b.attn for b in blocks if hasattr(b, "attn")]
 
 
+def _extract_attention_tensor(output: object) -> torch.Tensor | None:
+    candidates: list[torch.Tensor] = []
+
+    def _walk(obj: object) -> None:
+        if torch.is_tensor(obj):
+            candidates.append(obj)
+            return
+        if isinstance(obj, (tuple, list)):
+            for it in obj:
+                _walk(it)
+            return
+        if isinstance(obj, dict):
+            for v in obj.values():
+                _walk(v)
+
+    _walk(output)
+    if not candidates:
+        return None
+
+    # attention map として安全な候補を優先: (B,H,T,T) かつ最後2次元が正方。
+    for t in candidates:
+        if t.ndim == 4 and t.shape[-1] == t.shape[-2]:
+            return t
+
+    return None
+
+
 def main() -> None:
     args = parse_args()
     ensure_dir(args.out)
@@ -52,6 +82,9 @@ def main() -> None:
     ids = load_ids(args.ids)
     embs = np.load(args.emb)
     sid_to_idx = {sid: i for i, sid in enumerate(ids)}
+    if args.specimen_id not in sid_to_idx:
+        raise ValueError(f"specimen_id not found in ids: {args.specimen_id}")
+
     z_specimen = torch.from_numpy(embs[sid_to_idx[args.specimen_id]]).to(device).float()
     z_specimen = F.normalize(z_specimen, dim=0).detach()
 
@@ -62,33 +95,53 @@ def main() -> None:
     fig_roll, axs_roll = plt.subplots(2, n_show, figsize=(3 * n_show, 6))
     fig_grad, axs_grad = plt.subplots(2, n_show, figsize=(3 * n_show, 6))
 
+    success_cols = 0
     for col, ip in enumerate(image_paths[:n_show]):
         x = load_image_tensor(ip, transform).unsqueeze(0).to(device)
-        attn_maps: list[torch.Tensor] = []
-        grads: list[torch.Tensor] = []
+        x.requires_grad_(True)
 
-        def fwd_hook(_m, _in, out):
-            a = out[1] if isinstance(out, tuple) else out
-            attn_maps.append(a)
-            a.retain_grad()
+        attn_maps: list[torch.Tensor] = []
+        attn_grads: list[torch.Tensor | None] = []
+
+        def fwd_hook(_module, _args, output):
+            attn = _extract_attention_tensor(output)
+            if attn is None:
+                return
+
+            attn_maps.append(attn)
+            idx = len(attn_grads)
+            attn_grads.append(None)
+
+            if attn.requires_grad:
+                def _save_grad(g: torch.Tensor, grad_idx: int = idx) -> None:
+                    attn_grads[grad_idx] = g
+
+                attn.register_hook(_save_grad)
 
         hooks = [m.register_forward_hook(fwd_hook) for m in attn_modules]
         for p in model.parameters():
             p.requires_grad_(False)
 
-        z_view = forward_embedding(model, x)
-        z_view = F.normalize(z_view.squeeze(0), dim=0)
-        score = F.cosine_similarity(z_view.unsqueeze(0), z_specimen.unsqueeze(0)).mean()
-        model.zero_grad(set_to_none=True)
-        score.backward()
+        try:
+            model.zero_grad(set_to_none=True)
+            z_view = forward_embedding(model, x, enable_grad=True)
+            z_view = F.normalize(z_view, dim=-1)
+            score = F.cosine_similarity(z_view, z_specimen.unsqueeze(0), dim=-1).sum()
+            score.backward()
+        finally:
+            for h in hooks:
+                h.remove()
 
-        for a in attn_maps:
-            grads.append(a.grad if a.grad is not None else torch.zeros_like(a))
-        for h in hooks:
-            h.remove()
+        if not attn_maps:
+            LOGGER.warning("No attention tensor extracted for view: %s. Skipping this view.", ip)
+            continue
+
+        grads_for_rollout: list[torch.Tensor] = []
+        for attn, grad in zip(attn_maps, attn_grads):
+            grads_for_rollout.append(grad if grad is not None else torch.zeros_like(attn))
 
         roll = attention_rollout(attn_maps)
-        grad_roll = grad_attention_rollout(attn_maps, grads)
+        grad_roll = grad_attention_rollout(attn_maps, grads_for_rollout)
 
         n_tokens = int(np.sqrt(roll.shape[-1]))
         heat = to_patch_heatmap(roll[0], n_tokens)
@@ -108,6 +161,12 @@ def main() -> None:
         axs_grad[1, col].imshow(img)
         axs_grad[1, col].imshow(gheat, cmap="jet", alpha=0.45, extent=(0, img.shape[1], img.shape[0], 0))
         axs_grad[1, col].axis("off")
+        success_cols += 1
+
+    if success_cols == 0:
+        raise RuntimeError(
+            "No valid attention map extracted for any view. Please check timm version/model attention outputs."
+        )
 
     fig_roll.tight_layout()
     fig_grad.tight_layout()
