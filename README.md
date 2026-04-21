@@ -84,8 +84,9 @@ python -m src.cluster_baseline --emb data/embeddings/embeddings.npy --ids data/e
 
 5. 埋め込み空間可視化
 ```bash
-python -m src.visualize_embedding_space --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --out results/vis
+python -m src.visualize_embedding_space --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --format both --out results/vis
 ```
+`results/vis/embedding_space_<method>_3d.html` をブラウザで開くと，マウスで回転・拡大縮小できる 3D インタラクティブ可視化を確認できます。
 
 6. ViT 根拠可視化
 ```bash
