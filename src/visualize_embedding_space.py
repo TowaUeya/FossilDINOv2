@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 
 from src.utils.io import ensure_dir, load_ids
@@ -89,21 +90,92 @@ def main() -> None:
 
     if args.format in {"html", "both"}:
         out_html = args.out / f"embedding_space_{args.method}_3d.html"
-        hover_cols = [c for c in ["cluster_id", "label"] if c in df.columns]
-        fig = px.scatter_3d(
+        if color_col == "cluster_id":
+            fig = _build_cluster_toggle_3d_figure(df, args.method)
+        else:
+            hover_cols = [c for c in ["cluster_id", "label"] if c in df.columns]
+            fig = px.scatter_3d(
+                df,
+                x="x3",
+                y="y3",
+                z="z3",
+                color=color_col,
+                hover_name="specimen_id",
+                hover_data=hover_cols if hover_cols else None,
+                opacity=0.85,
+                title=f"Embedding space ({args.method}, 3D interactive)",
+            )
+        fig.update_traces(marker={"size": 4})
+        fig.update_layout(margin={"l": 0, "r": 0, "t": 40, "b": 0})
+        fig.write_html(out_html, include_plotlyjs="cdn")
+
+
+def _build_cluster_toggle_3d_figure(df: pd.DataFrame, method: str) -> go.Figure:
+    hover_cols = [c for c in ["cluster_id", "label"] if c in df.columns]
+    cluster_values = sorted(df["cluster_id"].dropna().unique().tolist(), key=lambda x: (str(type(x)), x))
+    if not cluster_values:
+        return px.scatter_3d(
             df,
             x="x3",
             y="y3",
             z="z3",
-            color=color_col,
             hover_name="specimen_id",
             hover_data=hover_cols if hover_cols else None,
             opacity=0.85,
-            title=f"Embedding space ({args.method}, 3D interactive)",
+            title=f"Embedding space ({method}, 3D interactive)",
         )
-        fig.update_traces(marker={"size": 4})
-        fig.update_layout(margin={"l": 0, "r": 0, "t": 40, "b": 0})
-        fig.write_html(out_html, include_plotlyjs="cdn")
+
+    palette = px.colors.qualitative.Alphabet
+    color_map = {cluster: palette[i % len(palette)] for i, cluster in enumerate(cluster_values)}
+
+    fig = go.Figure()
+    for cluster in cluster_values:
+        group = df[df["cluster_id"] == cluster]
+        customdata = np.stack([group[c].fillna("-").astype(str).to_numpy() for c in hover_cols], axis=1) if hover_cols else None
+        hovertemplate = "<b>%{hovertext}</b><br>"
+        if hover_cols:
+            hovertemplate += "<br>".join(f"{c}: %{{customdata[{i}]}}" for i, c in enumerate(hover_cols)) + "<br>"
+        hovertemplate += "x: %{x:.3f}<br>y: %{y:.3f}<br>z: %{z:.3f}<extra></extra>"
+        fig.add_trace(
+            go.Scatter3d(
+                x=group["x3"],
+                y=group["y3"],
+                z=group["z3"],
+                mode="markers",
+                name=str(cluster),
+                legendgroup=str(cluster),
+                marker={"size": 4, "opacity": 0.85, "color": color_map[cluster]},
+                hovertext=group["specimen_id"],
+                customdata=customdata,
+                hovertemplate=hovertemplate,
+            )
+        )
+
+    visible_all = [True] * len(cluster_values)
+    visible_none = ["legendonly"] * len(cluster_values)
+    visible_without_minus1 = [cluster != -1 for cluster in cluster_values]
+    visible_only_minus1 = [cluster == -1 for cluster in cluster_values]
+
+    fig.update_layout(
+        title=f"Embedding space ({method}, 3D interactive)",
+        scene={"xaxis_title": "x3", "yaxis_title": "y3", "zaxis_title": "z3"},
+        updatemenus=[
+            {
+                "type": "buttons",
+                "direction": "left",
+                "x": 0.0,
+                "y": 1.15,
+                "showactive": True,
+                "buttons": [
+                    {"label": "All", "method": "update", "args": [{"visible": visible_all}]},
+                    {"label": "None", "method": "update", "args": [{"visible": visible_none}]},
+                    {"label": "Hide cluster -1", "method": "update", "args": [{"visible": visible_without_minus1}]},
+                    {"label": "Only cluster -1", "method": "update", "args": [{"visible": visible_only_minus1}]},
+                ],
+            }
+        ],
+    )
+    return fig
 
 
 if __name__ == "__main__":
