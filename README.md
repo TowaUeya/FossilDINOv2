@@ -69,7 +69,7 @@ python -m src.render_multiview --in data/meshes --out data/renders --views 24 --
 
 2. DINOv2 凍結特徴抽出
 ```bash
-python -m src.extract_features --renders data/renders --out data/features --model dinov2_vits14 --device auto
+python -m src.extract_features --renders data/renders --out data/features --model dinov2_vits14 --device auto --image-size 518 --crop-size 518
 ```
 
 3. 視点統合
