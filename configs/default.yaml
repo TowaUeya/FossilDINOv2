@@ -1,0 +1,23 @@
+seed: 42
+render:
+  views: 12
+  size: 384
+  background: [1.0, 1.0, 1.0, 1.0]
+  light_direction: [0.577, -0.577, -0.577]
+  light_color: [1.0, 1.0, 1.0]
+  light_intensity: 50000
+extract:
+  model: dinov2_vits14
+  image_size: 224
+  crop_size: 224
+  batch_size: 16
+  device: auto
+pool:
+  method: mean
+cluster:
+  method: hdbscan
+  pca: 64
+  kmeans_k: 20
+search:
+  metric: cosine
+  topk: 10
