@@ -32,6 +32,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--image-size", type=int, default=224)
     p.add_argument("--crop-size", type=int, default=224)
     p.add_argument("--layers", type=str, choices=("all", "last"), default="all")
+    p.add_argument(
+        "--num-show",
+        type=int,
+        default=6,
+        help="Number of views to visualize. If larger than available views, all available views are shown.",
+    )
     return p.parse_args()
 
 
@@ -227,10 +233,15 @@ def main() -> None:
     z_specimen = F.normalize(z_specimen, dim=0).detach()
 
     image_paths = grouped[args.specimen_id]
-    n_show = min(6, len(image_paths))
+    if args.num_show < 1:
+        raise ValueError("--num-show must be >= 1")
+    n_show = min(args.num_show, len(image_paths))
 
-    fig_roll, axs_roll = plt.subplots(2, n_show, figsize=(3 * n_show, 6))
-    fig_grad, axs_grad = plt.subplots(2, n_show, figsize=(3 * n_show, 6))
+    # Increase figure size according to the number of shown images to preserve readability.
+    fig_w = max(4.0 * n_show, 8.0)
+    fig_h = 8.0
+    fig_roll, axs_roll = plt.subplots(2, n_show, figsize=(fig_w, fig_h), squeeze=False)
+    fig_grad, axs_grad = plt.subplots(2, n_show, figsize=(fig_w, fig_h), squeeze=False)
 
     success_cols = 0
     try:
@@ -305,8 +316,6 @@ def main() -> None:
     fig_grad.tight_layout()
     fig_roll.savefig(args.out / "attention_rollout.png", dpi=220)
     fig_grad.savefig(args.out / "grad_rollout_similarity_to_specimen.png", dpi=220)
-    fig_roll.savefig(args.out / "attention_rollout_contact_sheet.png", dpi=220)
-    fig_grad.savefig(args.out / "grad_rollout_similarity_to_specimen_contact_sheet.png", dpi=220)
 
 
 if __name__ == "__main__":
