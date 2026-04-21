@@ -68,7 +68,22 @@ def _unwrap_qkv(qkv: torch.Tensor, x: torch.Tensor, num_heads: int) -> tuple[tor
 def _make_attention_forward_wrapper(attn_obj: torch.nn.Module, original_forward: Any):
     del original_forward
 
-    def wrapped_forward(x: torch.Tensor) -> torch.Tensor:
+    def wrapped_forward(*args: Any, **kwargs: Any) -> torch.Tensor:
+        if len(args) > 0:
+            x = args[0]
+        else:
+            x = kwargs.get("x", None)
+        if x is None:
+            raise ValueError("Attention wrapper received no input tensor.")
+
+        attn_mask = kwargs.get("attn_mask", None)
+        if attn_mask is not None and not getattr(attn_obj, "_warned_attn_mask_ignored", False):
+            LOGGER.warning(
+                "attn_mask was passed to wrapped attention, but explicit mask application is "
+                "not implemented in explain wrapper. Continuing without mask."
+            )
+            attn_obj._warned_attn_mask_ignored = True
+
         bsz, n_tokens, dim = x.shape
         num_heads = int(getattr(attn_obj, "num_heads", 1))
 
