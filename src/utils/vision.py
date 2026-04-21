@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+import timm
 import torch
 from torchvision import transforms
 
@@ -12,6 +13,9 @@ LOGGER = logging.getLogger(__name__)
 
 DINOV2_MEAN = (0.485, 0.456, 0.406)
 DINOV2_STD = (0.229, 0.224, 0.225)
+MODEL_ALIASES = {
+    "dinov2_vits14": "vit_small_patch14_dinov2.lvd142m",
+}
 
 
 def resolve_device(device: str = "auto") -> torch.device:
@@ -36,10 +40,29 @@ def build_transform(image_size: int = 224, crop_size: int = 224) -> transforms.C
 
 def load_image_tensor(image_path: Path, transform: transforms.Compose) -> torch.Tensor:
     with Image.open(image_path) as img:
-        img = img.convert("RGB")
-        return transform(img)
+        return transform(img.convert("RGB"))
 
 
 def l2_normalize(array: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     norm = np.linalg.norm(array, axis=-1, keepdims=True)
     return array / np.maximum(norm, eps)
+
+
+def load_dinov2_model(model_name: str, device: torch.device) -> torch.nn.Module:
+    timm_name = MODEL_ALIASES.get(model_name, model_name)
+    model = timm.create_model(timm_name, pretrained=True)
+    model.eval()
+    model.to(device)
+    return model
+
+
+def forward_embedding(model: torch.nn.Module, batch: torch.Tensor) -> torch.Tensor:
+    out = model.forward_features(batch)
+    if isinstance(out, dict):
+        if "x_norm_clstoken" in out:
+            return out["x_norm_clstoken"]
+        if "x_cls" in out:
+            return out["x_cls"]
+    if isinstance(out, torch.Tensor):
+        return out
+    raise RuntimeError("Unsupported model output format for embeddings")
