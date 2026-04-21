@@ -14,7 +14,7 @@ LOGGER = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pool multi-view features into specimen embeddings")
-    parser.add_argument("--features", type=Path, required=True, help="Directory with per-specimen [V,D] feature npy files")
+    parser.add_argument("--features", type=Path, required=True, help="Directory with per-specimen feature npy files (e.g. [V,D] or [V,T,D])")
     parser.add_argument("--out", type=Path, required=True, help="Output directory for embeddings")
     parser.add_argument("--pool", type=str, choices=["mean", "max"], default="mean")
     parser.add_argument("--seed", type=int, default=42)
@@ -22,12 +22,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def pool_features(arr: np.ndarray, method: str) -> np.ndarray:
-    if arr.ndim != 2:
-        raise ValueError(f"Expected [V,D], got shape={arr.shape}")
+    if arr.ndim < 2:
+        raise ValueError(f"Expected [...,D], got shape={arr.shape}")
+
+    pool_axes = tuple(range(arr.ndim - 1))
     if method == "mean":
-        return arr.mean(axis=0)
+        return arr.mean(axis=pool_axes)
     if method == "max":
-        return arr.max(axis=0)
+        return arr.max(axis=pool_axes)
     raise ValueError(f"Unsupported pooling method: {method}")
 
 
