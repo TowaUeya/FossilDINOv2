@@ -6,6 +6,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.express as px
 from sklearn.decomposition import PCA
 
 from src.utils.io import ensure_dir, load_ids
@@ -19,6 +20,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--labels", type=Path, default=None)
     p.add_argument("--method", choices=["pca", "umap"], default="pca")
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument(
+        "--format",
+        choices=["png", "html", "both"],
+        default="both",
+        help="Output format: static PNG, interactive HTML, or both",
+    )
     return p.parse_args()
 
 
@@ -50,29 +57,53 @@ def main() -> None:
         df = df.merge(labels_df, on="specimen_id", how="left")
 
     if args.method == "pca":
-        xy = PCA(n_components=2, random_state=42).fit_transform(x)
-        out_path = args.out / "embedding_space_pca.png"
+        proj_2d = PCA(n_components=2, random_state=42).fit_transform(x)
+        proj_3d = PCA(n_components=3, random_state=42).fit_transform(x)
     else:
         import umap
 
-        xy = umap.UMAP(n_components=2, random_state=42).fit_transform(x)
-        out_path = args.out / "embedding_space_umap.png"
+        proj_2d = umap.UMAP(n_components=2, random_state=42).fit_transform(x)
+        proj_3d = umap.UMAP(n_components=3, random_state=42).fit_transform(x)
 
-    df["x"] = xy[:, 0]
-    df["y"] = xy[:, 1]
+    df["x"] = proj_2d[:, 0]
+    df["y"] = proj_2d[:, 1]
+    df["x3"] = proj_3d[:, 0]
+    df["y3"] = proj_3d[:, 1]
+    df["z3"] = proj_3d[:, 2]
 
-    plt.figure(figsize=(8, 6))
     color_col = "cluster_id" if "cluster_id" in df.columns else ("label" if "label" in df.columns else None)
-    if color_col is None:
-        plt.scatter(df["x"], df["y"], s=18)
-    else:
-        for k, g in df.groupby(color_col):
-            plt.scatter(g["x"], g["y"], s=18, label=str(k), alpha=0.8)
-        if df[color_col].nunique() <= 20:
-            plt.legend(fontsize=8)
-    plt.title(f"Embedding space ({args.method})")
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=200)
+
+    if args.format in {"png", "both"}:
+        out_png = args.out / f"embedding_space_{args.method}.png"
+        plt.figure(figsize=(8, 6))
+        if color_col is None:
+            plt.scatter(df["x"], df["y"], s=18)
+        else:
+            for k, g in df.groupby(color_col):
+                plt.scatter(g["x"], g["y"], s=18, label=str(k), alpha=0.8)
+            if df[color_col].nunique() <= 20:
+                plt.legend(fontsize=8)
+        plt.title(f"Embedding space ({args.method}, 2D)")
+        plt.tight_layout()
+        plt.savefig(out_png, dpi=200)
+
+    if args.format in {"html", "both"}:
+        out_html = args.out / f"embedding_space_{args.method}_3d.html"
+        hover_cols = [c for c in ["cluster_id", "label"] if c in df.columns]
+        fig = px.scatter_3d(
+            df,
+            x="x3",
+            y="y3",
+            z="z3",
+            color=color_col,
+            hover_name="specimen_id",
+            hover_data=hover_cols if hover_cols else None,
+            opacity=0.85,
+            title=f"Embedding space ({args.method}, 3D interactive)",
+        )
+        fig.update_traces(marker={"size": 4})
+        fig.update_layout(margin={"l": 0, "r": 0, "t": 40, "b": 0})
+        fig.write_html(out_html, include_plotlyjs="cdn")
 
 
 if __name__ == "__main__":
