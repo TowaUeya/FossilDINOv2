@@ -1,0 +1,22 @@
+pipeline:
+  research_mode: frozen_feature_baseline
+render:
+  views: 12
+  size: 384
+  background: white
+  normalize_mesh: bbox_center_scale
+feature_extractor:
+  model: dinov2_vits14
+  frozen: true
+  inference_mode: true
+pooling:
+  method: mean
+clustering:
+  method: hdbscan
+  normalize: l2
+  metric: euclidean
+  min_cluster_size: 10
+  min_samples: null
+  selection_method: eom
+notes:
+  - "この設定は主解析用の固定値。結果を見て調整しない。"

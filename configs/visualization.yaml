@@ -1,0 +1,12 @@
+embedding_space:
+  methods: [pca, umap]
+  purpose: visualization_only
+hdbscan_tree:
+  purpose: explainability_only
+vit_attention:
+  methods:
+    - attention_rollout
+    - grad_attention_rollout
+  objective: cosine_similarity(z_view, z_specimen)
+notes:
+  - "可視化は説明のためであり、クラスタ設定選択には使わない。"

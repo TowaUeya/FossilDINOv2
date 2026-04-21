@@ -1,3 +1,4 @@
+"""旧実験コード。本研究の主張には使わない。"""
 from __future__ import annotations
 
 import logging
