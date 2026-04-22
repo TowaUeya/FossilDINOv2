@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import hdbscan
@@ -54,8 +55,24 @@ def main() -> None:
     try:
         clusterer.single_linkage_tree_.plot(axis=ax, truncate_mode=truncate_mode, p=args.single_linkage_p)
     except RecursionError:
-        ax.clear()
-        clusterer.single_linkage_tree_.plot(axis=ax, truncate_mode="lastp", p=min(args.single_linkage_p, 20))
+        original_limit = sys.getrecursionlimit()
+        required_limit = min(1_000_000, max(original_limit, int(4 * len(clusterer.single_linkage_tree_._linkage) + 1_000)))
+        sys.setrecursionlimit(required_limit)
+        try:
+            ax.clear()
+            clusterer.single_linkage_tree_.plot(axis=ax, truncate_mode=truncate_mode, p=args.single_linkage_p)
+        except RecursionError:
+            ax.clear()
+            ax.text(
+                0.5,
+                0.5,
+                "single_linkage_tree_ plot failed due to recursion depth.\nCSV was still exported.",
+                ha="center",
+                va="center",
+            )
+            ax.set_axis_off()
+        finally:
+            sys.setrecursionlimit(original_limit)
     plt.tight_layout()
     fig.savefig(args.out / "single_linkage_tree.png", dpi=200)
     plt.close(fig)
