@@ -4,6 +4,7 @@ import argparse
 import logging
 import math
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -25,7 +26,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--emb", type=Path, required=True)
     p.add_argument("--ids", type=Path, required=True)
     p.add_argument("--clusters", type=Path, required=False, default=None)
-    p.add_argument("--specimen_id", type=str, required=True)
+    p.add_argument(
+        "--specimen_id",
+        type=str,
+        required=False,
+        default=None,
+        help="Target specimen ID. If omitted, all specimen IDs found in both renders and --ids are processed.",
+    )
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--model", type=str, default="dinov2_vits14")
     p.add_argument("--device", type=str, default="auto")
@@ -39,6 +46,13 @@ def parse_args() -> argparse.Namespace:
         help="Number of views to visualize. If larger than available views, all available views are shown.",
     )
     return p.parse_args()
+
+
+def _specimen_output_dir(base_out: Path, specimen_id: str) -> Path:
+    parts = [p for p in PurePosixPath(specimen_id).parts if p not in ("", ".", "..")]
+    if not parts:
+        raise ValueError(f"Invalid specimen_id for output path: {specimen_id}")
+    return base_out.joinpath(*parts)
 
 
 def _collect_blocks(model: torch.nn.Module) -> list[torch.nn.Module]:
@@ -220,102 +234,135 @@ def main() -> None:
 
     render_files = list_image_files(args.renders)
     grouped = group_renders_by_specimen(render_files, root_dir=args.renders)
-    if args.specimen_id not in grouped:
-        raise ValueError(f"specimen_id not found: {args.specimen_id}")
-
     ids = load_ids(args.ids)
     embs = np.load(args.emb)
     sid_to_idx = {sid: i for i, sid in enumerate(ids)}
-    if args.specimen_id not in sid_to_idx:
-        raise ValueError(f"specimen_id not found in ids: {args.specimen_id}")
-
-    z_specimen = torch.from_numpy(embs[sid_to_idx[args.specimen_id]]).to(device).float()
-    z_specimen = F.normalize(z_specimen, dim=0).detach()
-
-    image_paths = grouped[args.specimen_id]
     if args.num_show < 1:
         raise ValueError("--num-show must be >= 1")
-    n_show = min(args.num_show, len(image_paths))
 
-    # Increase figure size according to the number of shown images to preserve readability.
-    fig_w = max(4.0 * n_show, 8.0)
-    fig_h = 8.0
-    fig_roll, axs_roll = plt.subplots(2, n_show, figsize=(fig_w, fig_h), squeeze=False)
-    fig_grad, axs_grad = plt.subplots(2, n_show, figsize=(fig_w, fig_h), squeeze=False)
+    if args.specimen_id is not None:
+        target_specimen_ids = [args.specimen_id]
+    else:
+        target_specimen_ids = [sid for sid in ids if sid in grouped]
 
-    success_cols = 0
+    if not target_specimen_ids:
+        raise RuntimeError("No common specimen IDs found between --ids and --renders.")
+
+    n_ok = 0
+    n_skip = 0
     try:
-        for col, ip in enumerate(image_paths[:n_show]):
-            x = load_image_tensor(ip, transform).unsqueeze(0).to(device)
-            x.requires_grad_(True)
-            _reset_block_attn_cache(rollout_blocks)
-
-            for p in model.parameters():
-                p.requires_grad_(False)
-
-            model.zero_grad(set_to_none=True)
-            z_view = forward_embedding(model, x, enable_grad=True)
-            z_view = F.normalize(z_view, dim=-1)
-            score = F.cosine_similarity(z_view, z_specimen.unsqueeze(0), dim=-1).sum()
-            score.backward()
-
-            attn_maps: list[torch.Tensor] = []
-            attn_grads: list[torch.Tensor] = []
-            for blk in rollout_blocks:
-                attn_map = getattr(blk.attn, "_last_attn_map", None)
-                if attn_map is None:
-                    continue
-
-                attn_grad = getattr(blk.attn, "_last_attn_grad", None)
-                if attn_grad is None and getattr(attn_map, "grad", None) is not None:
-                    attn_grad = attn_map.grad
-                if attn_grad is None:
-                    attn_grad = torch.zeros_like(attn_map)
-
-                attn_maps.append(attn_map)
-                attn_grads.append(attn_grad)
-
-            if not attn_maps:
-                LOGGER.warning("No attention tensor extracted for view: %s. Skipping this view.", ip)
+        for specimen_id in target_specimen_ids:
+            if specimen_id not in grouped:
+                LOGGER.warning("Skipping %s: specimen_id not found in renders.", specimen_id)
+                n_skip += 1
+                continue
+            if specimen_id not in sid_to_idx:
+                LOGGER.warning("Skipping %s: specimen_id not found in ids.", specimen_id)
+                n_skip += 1
                 continue
 
-            roll = attention_rollout(attn_maps)
-            grad_roll = grad_attention_rollout(attn_maps, attn_grads)
+            z_specimen = torch.from_numpy(embs[sid_to_idx[specimen_id]]).to(device).float()
+            z_specimen = F.normalize(z_specimen, dim=0).detach()
 
-            roll_tokens = _cls_to_patch_tokens(roll[0], num_patches, ip)
-            grad_tokens = _cls_to_patch_tokens(grad_roll[0], num_patches, ip)
-            grid = _infer_grid_size(int(roll_tokens.shape[-1]), ip)
+            image_paths = grouped[specimen_id]
+            n_show = min(args.num_show, len(image_paths))
 
-            heat = to_patch_heatmap(roll_tokens, grid)
-            gheat = to_patch_heatmap(grad_tokens, grid)
+            fig_w = max(4.0 * n_show, 8.0)
+            fig_h = 8.0
+            fig_roll, axs_roll = plt.subplots(2, n_show, figsize=(fig_w, fig_h), squeeze=False)
+            fig_grad, axs_grad = plt.subplots(2, n_show, figsize=(fig_w, fig_h), squeeze=False)
 
-            img = plt.imread(ip)
-            axs_roll[0, col].imshow(img)
-            axs_roll[0, col].set_title(Path(ip).name)
-            axs_roll[0, col].axis("off")
-            axs_roll[1, col].imshow(img)
-            axs_roll[1, col].imshow(heat, cmap="jet", alpha=0.45, extent=(0, img.shape[1], img.shape[0], 0))
-            axs_roll[1, col].axis("off")
+            success_cols = 0
+            for col, ip in enumerate(image_paths[:n_show]):
+                x = load_image_tensor(ip, transform).unsqueeze(0).to(device)
+                x.requires_grad_(True)
+                _reset_block_attn_cache(rollout_blocks)
 
-            axs_grad[0, col].imshow(img)
-            axs_grad[0, col].set_title(Path(ip).name)
-            axs_grad[0, col].axis("off")
-            axs_grad[1, col].imshow(img)
-            axs_grad[1, col].imshow(gheat, cmap="jet", alpha=0.45, extent=(0, img.shape[1], img.shape[0], 0))
-            axs_grad[1, col].axis("off")
-            success_cols += 1
+                for p in model.parameters():
+                    p.requires_grad_(False)
+
+                model.zero_grad(set_to_none=True)
+                z_view = forward_embedding(model, x, enable_grad=True)
+                z_view = F.normalize(z_view, dim=-1)
+                score = F.cosine_similarity(z_view, z_specimen.unsqueeze(0), dim=-1).sum()
+                score.backward()
+
+                attn_maps: list[torch.Tensor] = []
+                attn_grads: list[torch.Tensor] = []
+                for blk in rollout_blocks:
+                    attn_map = getattr(blk.attn, "_last_attn_map", None)
+                    if attn_map is None:
+                        continue
+
+                    attn_grad = getattr(blk.attn, "_last_attn_grad", None)
+                    if attn_grad is None and getattr(attn_map, "grad", None) is not None:
+                        attn_grad = attn_map.grad
+                    if attn_grad is None:
+                        attn_grad = torch.zeros_like(attn_map)
+
+                    attn_maps.append(attn_map)
+                    attn_grads.append(attn_grad)
+
+                if not attn_maps:
+                    LOGGER.warning("No attention tensor extracted for view: %s. Skipping this view.", ip)
+                    continue
+
+                roll = attention_rollout(attn_maps)
+                grad_roll = grad_attention_rollout(attn_maps, attn_grads)
+
+                roll_tokens = _cls_to_patch_tokens(roll[0], num_patches, ip)
+                grad_tokens = _cls_to_patch_tokens(grad_roll[0], num_patches, ip)
+                grid = _infer_grid_size(int(roll_tokens.shape[-1]), ip)
+
+                heat = to_patch_heatmap(roll_tokens, grid)
+                gheat = to_patch_heatmap(grad_tokens, grid)
+
+                img = plt.imread(ip)
+                axs_roll[0, col].imshow(img)
+                axs_roll[0, col].set_title(Path(ip).name)
+                axs_roll[0, col].axis("off")
+                axs_roll[1, col].imshow(img)
+                axs_roll[1, col].imshow(heat, cmap="jet", alpha=0.45, extent=(0, img.shape[1], img.shape[0], 0))
+                axs_roll[1, col].axis("off")
+
+                axs_grad[0, col].imshow(img)
+                axs_grad[0, col].set_title(Path(ip).name)
+                axs_grad[0, col].axis("off")
+                axs_grad[1, col].imshow(img)
+                axs_grad[1, col].imshow(gheat, cmap="jet", alpha=0.45, extent=(0, img.shape[1], img.shape[0], 0))
+                axs_grad[1, col].axis("off")
+                success_cols += 1
+
+            if success_cols == 0:
+                LOGGER.warning(
+                    "Skipping %s: no valid attention map extracted for any view. ",
+                    specimen_id,
+                )
+                plt.close(fig_roll)
+                plt.close(fig_grad)
+                n_skip += 1
+                continue
+
+            fig_roll.tight_layout()
+            fig_grad.tight_layout()
+
+            specimen_out = _specimen_output_dir(args.out, specimen_id)
+            ensure_dir(specimen_out)
+            fig_roll.savefig(specimen_out / "attention_rollout.png", dpi=220)
+            fig_grad.savefig(specimen_out / "grad_rollout_similarity_to_specimen.png", dpi=220)
+            plt.close(fig_roll)
+            plt.close(fig_grad)
+            n_ok += 1
+            LOGGER.info("Saved ViT attention explanations for %s to %s", specimen_id, specimen_out)
     finally:
         _restore_attention_wrappers(restore_state)
 
-    if success_cols == 0:
+    if n_ok == 0:
         raise RuntimeError(
-            "No valid attention map extracted for any view. Please check timm version/model attention outputs."
+            "No valid attention maps were saved for any specimen. Please check timm version/model attention outputs."
         )
 
-    fig_roll.tight_layout()
-    fig_grad.tight_layout()
-    fig_roll.savefig(args.out / "attention_rollout.png", dpi=220)
-    fig_grad.savefig(args.out / "grad_rollout_similarity_to_specimen.png", dpi=220)
+    LOGGER.info("Completed ViT attention explanation. success=%d skipped=%d", n_ok, n_skip)
 
 
 if __name__ == "__main__":
