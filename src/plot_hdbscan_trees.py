@@ -21,6 +21,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min_cluster_size", type=int, default=10)
     p.add_argument("--min_samples", type=int, default=None)
     p.add_argument("--selection_method", choices=["eom"], default="eom")
+    p.add_argument(
+        "--single_linkage_truncate_mode",
+        choices=["lastp", "level", "none"],
+        default="lastp",
+        help="Dendrogram truncation mode for single linkage tree plot. Use 'none' for full tree.",
+    )
+    p.add_argument(
+        "--single_linkage_p",
+        type=int,
+        default=50,
+        help="Number of leaves/levels to show when single linkage truncation is enabled.",
+    )
     return p.parse_args()
 
 
@@ -37,8 +49,13 @@ def main() -> None:
         cluster_selection_method=args.selection_method,
     ).fit(x)
 
+    truncate_mode = None if args.single_linkage_truncate_mode == "none" else args.single_linkage_truncate_mode
     fig, ax = plt.subplots(figsize=(10, 6))
-    clusterer.single_linkage_tree_.plot(axis=ax)
+    try:
+        clusterer.single_linkage_tree_.plot(axis=ax, truncate_mode=truncate_mode, p=args.single_linkage_p)
+    except RecursionError:
+        ax.clear()
+        clusterer.single_linkage_tree_.plot(axis=ax, truncate_mode="lastp", p=min(args.single_linkage_p, 20))
     plt.tight_layout()
     fig.savefig(args.out / "single_linkage_tree.png", dpi=200)
     plt.close(fig)
