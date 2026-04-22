@@ -90,21 +90,12 @@ python -m src.visualize_embedding_space --emb data/embeddings/embeddings.npy --i
 
 6. ViT 根拠可視化
 ```bash
-python -m src.explain_vit_attention \
-  --renders data/renders \
-  --features data/features \
-  --emb data/embeddings/embeddings.npy \
-  --ids data/embeddings/ids.txt \
-  --clusters results/baseline_cluster/clusters.csv \
-  --out results/explain \
-  --image-size 518 \
-  --crop-size 518 \
-  --num-show 24
+python -m src.explain_vit_attention --renders data/renders --features data/features --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --out results/explain --image-size 518 --crop-size 518 --num-show 24
 ```
 
 7. HDBSCAN tree 可視化
 ```bash
-python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --out results/trees
+python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --out results/trees --single_linkage_truncate_mode lastp --single_linkage_p 30
 ```
 
 8. ラベルあり評価（検証のみ）
