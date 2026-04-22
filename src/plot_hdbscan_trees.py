@@ -38,19 +38,19 @@ def main() -> None:
     ).fit(x)
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    clusterer.single_linkage_tree_.plot(ax=ax)
+    clusterer.single_linkage_tree_.plot(axis=ax)
     plt.tight_layout()
     fig.savefig(args.out / "single_linkage_tree.png", dpi=200)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    clusterer.condensed_tree_.plot(ax=ax, select_clusters=False)
+    clusterer.condensed_tree_.plot(axis=ax, select_clusters=False)
     plt.tight_layout()
     fig.savefig(args.out / "condensed_tree.png", dpi=200)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    clusterer.condensed_tree_.plot(ax=ax, select_clusters=True)
+    clusterer.condensed_tree_.plot(axis=ax, select_clusters=True)
     plt.tight_layout()
     fig.savefig(args.out / "condensed_tree_selected.png", dpi=200)
     plt.close(fig)
