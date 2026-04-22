@@ -98,7 +98,8 @@ python -m src.explain_vit_attention \
   --clusters results/baseline_cluster/clusters.csv \
   --out results/explain \
   --image-size 518 \
-  --crop-size 518
+  --crop-size 518 \
+  --num-show 24
 ```
 
 7. HDBSCAN tree 可視化
