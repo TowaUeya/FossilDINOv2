@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
+from tqdm.auto import tqdm
 
 from src.utils.explain import attention_rollout, grad_attention_rollout, to_patch_heatmap
 from src.utils.io import ensure_dir, group_renders_by_specimen, list_image_files, load_ids
@@ -251,7 +252,8 @@ def main() -> None:
     n_ok = 0
     n_skip = 0
     try:
-        for specimen_id in target_specimen_ids:
+        specimen_iter = tqdm(target_specimen_ids, desc="Specimens", unit="specimen")
+        for specimen_id in specimen_iter:
             if specimen_id not in grouped:
                 LOGGER.warning("Skipping %s: specimen_id not found in renders.", specimen_id)
                 n_skip += 1
@@ -273,7 +275,14 @@ def main() -> None:
             fig_grad, axs_grad = plt.subplots(2, n_show, figsize=(fig_w, fig_h), squeeze=False)
 
             success_cols = 0
-            for col, ip in enumerate(image_paths[:n_show]):
+            view_iter = tqdm(
+                enumerate(image_paths[:n_show]),
+                total=n_show,
+                desc=f"Views ({specimen_id})",
+                unit="view",
+                leave=False,
+            )
+            for col, ip in view_iter:
                 x = load_image_tensor(ip, transform).unsqueeze(0).to(device)
                 x.requires_grad_(True)
                 _reset_block_attn_cache(rollout_blocks)
@@ -354,6 +363,7 @@ def main() -> None:
             plt.close(fig_grad)
             n_ok += 1
             LOGGER.info("Saved ViT attention explanations for %s to %s", specimen_id, specimen_out)
+            specimen_iter.set_postfix(success=n_ok, skipped=n_skip)
     finally:
         _restore_attention_wrappers(restore_state)
 
