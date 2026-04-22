@@ -8,6 +8,8 @@ import hdbscan
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
+from scipy.cluster.hierarchy import dendrogram
 
 from src.utils.io import ensure_dir, load_ids
 from src.utils.vision import l2_normalize
@@ -93,11 +95,61 @@ def main() -> None:
         args.out / "single_linkage_tree.csv", index=False
     )
     pd.DataFrame(clusterer.condensed_tree_.to_numpy()).to_csv(args.out / "condensed_tree.csv", index=False)
+    export_single_linkage_html(clusterer=clusterer, ids=ids, out_dir=args.out)
 
     if args.clusters is not None:
         c = pd.read_csv(args.clusters)
         c = c.set_index("specimen_id").reindex(ids)
         c.to_csv(args.out / "clusters_reindexed.csv")
+
+
+def export_single_linkage_html(clusterer: hdbscan.HDBSCAN, ids: list[str], out_dir: Path) -> None:
+    """Export an interactive dendrogram where each leaf hover shows specimen/model ID."""
+    linkage = clusterer.single_linkage_tree_.to_numpy()
+    if linkage.size == 0:
+        return
+
+    # scipy dendrogram expects (n-1, 4) linkage format.
+    # For HTML we intentionally use full tree (no truncation), so each model/specimen leaf is traceable.
+    dendro = dendrogram(linkage, labels=ids, no_plot=True)
+
+    fig = go.Figure()
+    for xs, ys in zip(dendro["icoord"], dendro["dcoord"]):
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="lines",
+                line=dict(color="#4B5563", width=1),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    leaf_positions = [5 + 10 * i for i in range(len(dendro["ivl"]))]
+    fig.add_trace(
+        go.Scatter(
+            x=leaf_positions,
+            y=[0.0] * len(leaf_positions),
+            mode="markers",
+            marker=dict(size=5, color="#2563EB"),
+            text=dendro["ivl"],
+            customdata=np.array(dendro["ivl"], dtype=object),
+            hovertemplate="model/specimen: %{customdata}<extra></extra>",
+            showlegend=False,
+        )
+    )
+
+    fig.update_layout(
+        title="HDBSCAN Single Linkage Tree (hover leaves to identify each model/specimen)",
+        xaxis_title="Leaf order",
+        yaxis_title="Distance",
+        template="plotly_white",
+        hovermode="closest",
+        height=800,
+    )
+
+    fig.write_html(out_dir / "single_linkage_tree.html", include_plotlyjs="cdn")
 
 
 if __name__ == "__main__":
