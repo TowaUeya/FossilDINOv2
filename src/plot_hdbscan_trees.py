@@ -95,18 +95,26 @@ def main() -> None:
         args.out / "single_linkage_tree.csv", index=False
     )
     pd.DataFrame(clusterer.condensed_tree_.to_numpy()).to_csv(args.out / "condensed_tree.csv", index=False)
+    cluster_colors: dict[str, int] | None = None
+    if args.clusters is not None:
+        c = pd.read_csv(args.clusters)
+        c = c.set_index("specimen_id").reindex(ids)
+        c.to_csv(args.out / "clusters_reindexed.csv")
+        if "cluster_id" in c.columns:
+            cluster_colors = {
+                specimen_id: int(cluster_id)
+                for specimen_id, cluster_id in c["cluster_id"].items()
+                if pd.notna(cluster_id)
+            }
+
     export_single_linkage_html(
         clusterer=clusterer,
         ids=ids,
         out_dir=args.out,
         truncate_mode=truncate_mode,
         p=args.single_linkage_p,
+        cluster_labels_by_id=cluster_colors,
     )
-
-    if args.clusters is not None:
-        c = pd.read_csv(args.clusters)
-        c = c.set_index("specimen_id").reindex(ids)
-        c.to_csv(args.out / "clusters_reindexed.csv")
 
 
 def export_single_linkage_html(
@@ -115,6 +123,7 @@ def export_single_linkage_html(
     out_dir: Path,
     truncate_mode: str | None = None,
     p: int = 50,
+    cluster_labels_by_id: dict[str, int] | None = None,
 ) -> None:
     """Export an interactive dendrogram where each leaf hover shows specimen/model ID."""
     linkage = clusterer.single_linkage_tree_.to_numpy()
@@ -177,18 +186,103 @@ def export_single_linkage_html(
         )
 
     leaf_positions = [5 + 10 * i for i in range(len(dendro["ivl"]))]
+    cluster_palette = [
+        "#2563EB",
+        "#DC2626",
+        "#059669",
+        "#D97706",
+        "#7C3AED",
+        "#0891B2",
+        "#DB2777",
+        "#65A30D",
+        "#EA580C",
+        "#4338CA",
+    ]
+    noise_color = "#9CA3AF"
+    unknown_color = "#111827"
+
+    leaf_cluster_ids: list[int | None] = []
+    for specimen_id in dendro["ivl"]:
+        if cluster_labels_by_id is None:
+            leaf_cluster_ids.append(None)
+        else:
+            leaf_cluster_ids.append(cluster_labels_by_id.get(specimen_id))
+
+    leaf_colors: list[str] = []
+    hover_texts: list[str] = []
+    for specimen_id, cluster_id in zip(dendro["ivl"], leaf_cluster_ids):
+        if cluster_labels_by_id is None:
+            leaf_colors.append("#2563EB")
+            hover_texts.append(f"model/specimen: {specimen_id}")
+            continue
+        if cluster_id is None:
+            leaf_colors.append(unknown_color)
+            cluster_text = "N/A"
+        elif cluster_id == -1:
+            leaf_colors.append(noise_color)
+            cluster_text = str(cluster_id)
+        else:
+            leaf_colors.append(cluster_palette[cluster_id % len(cluster_palette)])
+            cluster_text = str(cluster_id)
+        hover_texts.append(f"model/specimen: {specimen_id}<br>fixed cluster: {cluster_text}")
+
     fig.add_trace(
         go.Scatter(
             x=leaf_positions,
             y=[0.0] * len(leaf_positions),
             mode="markers",
-            marker=dict(size=5, color="#2563EB"),
+            marker=dict(size=5, color=leaf_colors),
             text=dendro["ivl"],
-            customdata=np.array(dendro["ivl"], dtype=object),
-            hovertemplate="model/specimen: %{customdata}<extra></extra>",
+            customdata=np.array(hover_texts, dtype=object),
+            hovertemplate="%{customdata}<extra></extra>",
             showlegend=False,
         )
     )
+
+    if cluster_labels_by_id is not None:
+        present_clusters = sorted(
+            {
+                cid
+                for cid in leaf_cluster_ids
+                if cid is not None and cid != -1
+            }
+        )
+        for cid in present_clusters:
+            fig.add_trace(
+                go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode="markers",
+                    marker=dict(size=8, color=cluster_palette[cid % len(cluster_palette)]),
+                    name=f"cluster {cid}",
+                    showlegend=True,
+                    hoverinfo="skip",
+                )
+            )
+        if -1 in leaf_cluster_ids:
+            fig.add_trace(
+                go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode="markers",
+                    marker=dict(size=8, color=noise_color),
+                    name="cluster -1 (noise)",
+                    showlegend=True,
+                    hoverinfo="skip",
+                )
+            )
+        if None in leaf_cluster_ids:
+            fig.add_trace(
+                go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode="markers",
+                    marker=dict(size=8, color=unknown_color),
+                    name="cluster N/A",
+                    showlegend=True,
+                    hoverinfo="skip",
+                )
+            )
 
     fig.update_layout(
         title="HDBSCAN Single Linkage Tree (hover leaves to identify each model/specimen)",
@@ -197,6 +291,7 @@ def export_single_linkage_html(
         template="plotly_white",
         hovermode="closest",
         height=800,
+        legend_title="Fixed clustering",
     )
 
     fig.write_html(out_dir / "single_linkage_tree.html", include_plotlyjs="cdn")
