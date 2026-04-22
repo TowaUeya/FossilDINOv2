@@ -96,7 +96,6 @@ python -m src.explain_vit_attention \
   --emb data/embeddings/embeddings.npy \
   --ids data/embeddings/ids.txt \
   --clusters results/baseline_cluster/clusters.csv \
-  --specimen_id xbox/xbox_0042 \
   --out results/explain \
   --image-size 518 \
   --crop-size 518
