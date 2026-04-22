@@ -95,7 +95,13 @@ def main() -> None:
         args.out / "single_linkage_tree.csv", index=False
     )
     pd.DataFrame(clusterer.condensed_tree_.to_numpy()).to_csv(args.out / "condensed_tree.csv", index=False)
-    export_single_linkage_html(clusterer=clusterer, ids=ids, out_dir=args.out)
+    export_single_linkage_html(
+        clusterer=clusterer,
+        ids=ids,
+        out_dir=args.out,
+        truncate_mode=truncate_mode,
+        p=args.single_linkage_p,
+    )
 
     if args.clusters is not None:
         c = pd.read_csv(args.clusters)
@@ -103,15 +109,59 @@ def main() -> None:
         c.to_csv(args.out / "clusters_reindexed.csv")
 
 
-def export_single_linkage_html(clusterer: hdbscan.HDBSCAN, ids: list[str], out_dir: Path) -> None:
+def export_single_linkage_html(
+    clusterer: hdbscan.HDBSCAN,
+    ids: list[str],
+    out_dir: Path,
+    truncate_mode: str | None = None,
+    p: int = 50,
+) -> None:
     """Export an interactive dendrogram where each leaf hover shows specimen/model ID."""
     linkage = clusterer.single_linkage_tree_.to_numpy()
     if linkage.size == 0:
         return
 
     # scipy dendrogram expects (n-1, 4) linkage format.
-    # For HTML we intentionally use full tree (no truncation), so each model/specimen leaf is traceable.
-    dendro = dendrogram(linkage, labels=ids, no_plot=True)
+    # We first attempt the full tree. If recursion depth is exceeded, retry with
+    # a larger recursion limit and finally fall back to the CLI truncation mode.
+    try:
+        dendro = dendrogram(linkage, labels=ids, no_plot=True)
+    except RecursionError:
+        original_limit = sys.getrecursionlimit()
+        required_limit = min(1_000_000, max(original_limit, int(4 * len(linkage) + 1_000)))
+        sys.setrecursionlimit(required_limit)
+        try:
+            dendro = dendrogram(linkage, labels=ids, no_plot=True)
+        except RecursionError:
+            try:
+                dendro = dendrogram(
+                    linkage,
+                    labels=ids,
+                    no_plot=True,
+                    truncate_mode=truncate_mode,
+                    p=p,
+                )
+            except RecursionError:
+                fig = go.Figure()
+                fig.add_annotation(
+                    text=(
+                        "Failed to build dendrogram due to recursion depth.<br>"
+                        "Try a more aggressive truncation setting or fewer samples."
+                    ),
+                    x=0.5,
+                    y=0.5,
+                    xref="paper",
+                    yref="paper",
+                    showarrow=False,
+                )
+                fig.update_layout(
+                    title="HDBSCAN Single Linkage Tree",
+                    template="plotly_white",
+                )
+                fig.write_html(out_dir / "single_linkage_tree.html", include_plotlyjs="cdn")
+                return
+        finally:
+            sys.setrecursionlimit(original_limit)
 
     fig = go.Figure()
     for xs, ys in zip(dendro["icoord"], dendro["dcoord"]):
