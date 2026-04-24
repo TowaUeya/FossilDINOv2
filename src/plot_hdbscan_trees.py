@@ -86,7 +86,15 @@ def main() -> None:
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    clusterer.condensed_tree_.plot(axis=ax, select_clusters=True)
+    try:
+        clusterer.condensed_tree_.plot(axis=ax, select_clusters=True)
+    except (TypeError, ValueError):
+        # hdbscan's selected-cluster ellipse drawing can fail on some trees
+        # when a non-scalar height reaches matplotlib.patches.Ellipse.
+        # Fall back to the non-selected condensed tree so CLI export does not abort.
+        ax.clear()
+        clusterer.condensed_tree_.plot(axis=ax, select_clusters=False)
+        ax.set_title("Selected-cluster overlay failed; showing condensed tree only.")
     plt.tight_layout()
     fig.savefig(args.out / "condensed_tree_selected.png", dpi=200)
     plt.close(fig)
