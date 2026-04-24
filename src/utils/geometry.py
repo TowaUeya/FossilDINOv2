@@ -83,17 +83,56 @@ def get_points(geom: o3d.geometry.Geometry) -> np.ndarray:
     return pts
 
 
-def normalize_geometry(geom: o3d.geometry.Geometry, target_extent: float = 1.0) -> o3d.geometry.Geometry:
+def normalize_geometry(
+    geom: o3d.geometry.Geometry,
+    target_extent: float = 1.0,
+    quantile_low: float = 0.01,
+    quantile_high: float = 0.99,
+    drop_trimmed_points: bool = False,
+) -> o3d.geometry.Geometry:
+    if not 0.0 <= quantile_low < quantile_high <= 1.0:
+        raise ValueError("quantile range must satisfy 0.0 <= low < high <= 1.0")
+
     points = get_points(geom)
-    min_b = points.min(axis=0)
-    max_b = points.max(axis=0)
-    center = (min_b + max_b) / 2.0
-    extent = float(np.max(max_b - min_b))
-    if extent <= 0:
+    raw_min_b = points.min(axis=0)
+    raw_max_b = points.max(axis=0)
+    robust_min_b = np.quantile(points, quantile_low, axis=0)
+    robust_max_b = np.quantile(points, quantile_high, axis=0)
+
+    raw_extent_xyz = raw_max_b - raw_min_b
+    robust_extent_xyz = robust_max_b - robust_min_b
+    robust_extent = float(np.max(robust_extent_xyz))
+    if robust_extent <= 0:
         raise ValueError("invalid geometry extent")
 
+    LOGGER.info(
+        "Geometry normalization extents raw_extent=%s robust_extent=%s quantiles=(%.4f, %.4f)",
+        np.array2string(raw_extent_xyz, precision=6),
+        np.array2string(robust_extent_xyz, precision=6),
+        quantile_low,
+        quantile_high,
+    )
+
+    center = (robust_min_b + robust_max_b) / 2.0
+    inlier_mask = np.logical_and(points >= robust_min_b, points <= robust_max_b).all(axis=1)
+    trimmed_count = int((~inlier_mask).sum())
+    if drop_trimmed_points and trimmed_count > 0:
+        if isinstance(geom, o3d.geometry.PointCloud):
+            inlier_indices = np.flatnonzero(inlier_mask).tolist()
+            geom = geom.select_by_index(inlier_indices)
+        elif isinstance(geom, o3d.geometry.TriangleMesh):
+            geom.remove_vertices_by_mask((~inlier_mask).tolist())
+            geom.remove_unreferenced_vertices()
+        else:
+            LOGGER.warning("drop_trimmed_points ignored for unsupported geometry type: %s", type(geom))
+        LOGGER.info(
+            "Dropped %d / %d points outside robust bbox before normalization",
+            trimmed_count,
+            points.shape[0],
+        )
+
     geom = geom.translate(-center)
-    scale = target_extent / extent
+    scale = target_extent / robust_extent
     geom = geom.scale(scale, center=(0.0, 0.0, 0.0))
     return geom
 
