@@ -67,6 +67,21 @@ pip install -r requirements.txt
 python -m src.render_multiview --in data/meshes --out data/renders --views 24 --size 768
 ```
 
+レンダ時の主なCLI補足:
+
+- `--appearance {gray_lit,color_lit}`（既定: `gray_lit`）
+  - `gray_lit`: 固定グレー材質 + 固定照明。標本ごとの色・テクスチャ差を抑え，形態由来の陰影/輪郭を比較したいときに使います。
+  - `color_lit`: 頂点色やテクスチャがある場合は可能な限り反映しつつ，同じ固定照明で描画します（色情報が無い標本は安全に gray fallback）。
+- `--auto-zoom`: 標本ごとにカメラ半径を自動調整し，投影サイズのばらつきを抑えます。
+- `--target-fill-min` / `--target-fill-max`: `--auto-zoom` 時の目標充填率レンジを指定します。
+
+appearanceを明示する例:
+
+```bash
+python -m src.render_multiview --in data/meshes --out data/renders_gray --views 24 --size 768 --appearance gray_lit
+python -m src.render_multiview --in data/meshes --out data/renders_color --views 24 --size 768 --appearance color_lit
+```
+
 2. DINOv2 凍結特徴抽出
 ```bash
 python -m src.extract_features --renders data/renders --out data/features --model dinov2_vits14 --device auto --image-size 518 --crop-size 518

@@ -15,6 +15,45 @@ from src.utils.io import ensure_dir, list_mesh_files, set_seed, setup_logging
 LOGGER = logging.getLogger(__name__)
 
 
+def _make_material_for_appearance(
+    geom: o3d.geometry.Geometry,
+    appearance: str,
+) -> o3d.visualization.rendering.MaterialRecord:
+    """Build material for rendering appearance modes.
+
+    gray_lit uses a fixed gray material to suppress specimen color/texture differences
+    for shape-only rendering. color_lit keeps original vertex colors/textures when
+    available for optional appearance-aware rendering.
+    """
+    mat = o3d.visualization.rendering.MaterialRecord()
+    mat.shader = "defaultLit"
+
+    if appearance == "gray_lit":
+        mat.base_color = (0.8, 0.8, 0.8, 1.0)
+    elif appearance == "color_lit":
+        if isinstance(geom, o3d.geometry.TriangleMesh):
+            has_vertex_colors = geom.has_vertex_colors()
+            textures = getattr(geom, "textures", [])
+            num_textures = len(textures) if textures is not None else 0
+            if num_textures > 0:
+                try:
+                    mat.albedo_img = textures[0]
+                except Exception:
+                    LOGGER.debug("Failed to assign albedo texture; continuing without albedo_img.", exc_info=True)
+
+            if not has_vertex_colors and num_textures == 0:
+                mat.base_color = (0.8, 0.8, 0.8, 1.0)
+        elif isinstance(geom, o3d.geometry.PointCloud):
+            if not geom.has_colors():
+                mat.base_color = (0.8, 0.8, 0.8, 1.0)
+    else:
+        raise ValueError(f"Unsupported appearance: {appearance}")
+
+    if isinstance(geom, o3d.geometry.PointCloud):
+        mat.point_size = 3.0
+    return mat
+
+
 def _compute_bbox_fill_ratio(image: o3d.geometry.Image, bg_threshold: int = 245) -> float:
     image_np = np.asarray(image)
     if image_np.ndim != 3 or image_np.shape[2] < 3:
@@ -100,6 +139,7 @@ def render_specimen(
     light_direction: tuple[float, float, float],
     light_color: tuple[float, float, float],
     light_intensity: float,
+    appearance: str,
     auto_zoom: bool,
     target_fill_min: float,
     target_fill_max: float,
@@ -114,11 +154,40 @@ def render_specimen(
         LOGGER.exception("Failed to load/normalize %s: %s", mesh_path, e)
         return False, 0.0, float("nan")
 
-    mat = o3d.visualization.rendering.MaterialRecord()
-    mat.shader = "defaultLit"
-    mat.base_color = (0.8, 0.8, 0.8, 1.0)
-    if isinstance(geom, o3d.geometry.PointCloud):
-        mat.point_size = 3.0
+    if appearance == "color_lit":
+        if isinstance(geom, o3d.geometry.TriangleMesh):
+            has_vertex_colors = geom.has_vertex_colors()
+            has_triangle_uvs = geom.has_triangle_uvs()
+            textures = getattr(geom, "textures", [])
+            num_textures = len(textures) if textures is not None else 0
+            LOGGER.debug(
+                "Color appearance for %s: has_vertex_colors=%s has_triangle_uvs=%s num_textures=%d",
+                mesh_rel.as_posix(),
+                has_vertex_colors,
+                has_triangle_uvs,
+                num_textures,
+            )
+            if not has_vertex_colors and num_textures == 0:
+                LOGGER.warning(
+                    "color_lit requested but no vertex colors/textures were detected for %s; "
+                    "falling back to gray material.",
+                    mesh_rel.as_posix(),
+                )
+        elif isinstance(geom, o3d.geometry.PointCloud):
+            has_point_colors = geom.has_colors()
+            LOGGER.debug(
+                "Color appearance for %s: has_point_colors=%s",
+                mesh_rel.as_posix(),
+                has_point_colors,
+            )
+            if not has_point_colors:
+                LOGGER.warning(
+                    "color_lit requested but no point colors were detected for %s; "
+                    "falling back to gray material.",
+                    mesh_rel.as_posix(),
+                )
+
+    mat = _make_material_for_appearance(geom=geom, appearance=appearance)
 
     scene = renderer.scene
     scene.clear_geometry()
@@ -172,6 +241,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--views", type=int, default=12)
     parser.add_argument("--size", type=int, default=384)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--appearance",
+        choices=["gray_lit", "color_lit"],
+        default="gray_lit",
+        help=(
+            "Rendering appearance. "
+            "gray_lit: fixed gray material with fixed lighting for shape-only rendering. "
+            "color_lit: use original vertex colors/textures when available with fixed lighting."
+        ),
+    )
     parser.add_argument("--auto-zoom", action="store_true", help="Automatically tune camera radius per specimen.")
     parser.add_argument("--target-fill-min", type=float, default=0.35, help="Minimum target preview fill ratio.")
     parser.add_argument("--target-fill-max", type=float, default=0.55, help="Maximum target preview fill ratio.")
@@ -186,6 +265,7 @@ def main() -> None:
         raise ValueError("--target-fill-min / --target-fill-max must satisfy 0 < min < max < 1")
 
     ensure_dir(args.output_dir)
+    LOGGER.info("Rendering appearance: %s", args.appearance)
     mesh_files = list_mesh_files(args.input_dir)
     if not mesh_files:
         LOGGER.warning("No mesh files found in %s", args.input_dir)
@@ -208,6 +288,7 @@ def main() -> None:
             light_direction=(0.577, -0.577, -0.577),
             light_color=(1.0, 1.0, 1.0),
             light_intensity=50000,
+            appearance=args.appearance,
             auto_zoom=args.auto_zoom,
             target_fill_min=args.target_fill_min,
             target_fill_max=args.target_fill_max,
@@ -219,6 +300,7 @@ def main() -> None:
                 "auto_zoom": args.auto_zoom,
                 "preview_fill_ratio": fill_ratio,
                 "final_radius": final_radius,
+                "appearance": args.appearance,
             }
         )
         if ok:
@@ -227,7 +309,7 @@ def main() -> None:
     with zoom_report_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["specimen", "ok", "auto_zoom", "preview_fill_ratio", "final_radius"],
+            fieldnames=["specimen", "ok", "auto_zoom", "preview_fill_ratio", "final_radius", "appearance"],
         )
         writer.writeheader()
         writer.writerows(zoom_rows)
