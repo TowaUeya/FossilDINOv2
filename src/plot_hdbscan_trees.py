@@ -88,6 +88,10 @@ def main() -> None:
     fig, ax = plt.subplots(figsize=(10, 6))
     try:
         clusterer.condensed_tree_.plot(axis=ax, select_clusters=True)
+        # Some hdbscan trees only fail when matplotlib actually draws the
+        # selected-cluster ellipses. Trigger a draw here so we can safely
+        # fall back before savefig().
+        fig.canvas.draw()
     except (TypeError, ValueError):
         # hdbscan's selected-cluster ellipse drawing can fail on some trees
         # when a non-scalar height reaches matplotlib.patches.Ellipse.
