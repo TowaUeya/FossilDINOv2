@@ -104,6 +104,60 @@ def _compute_bbox_fill_ratio(
     return bbox_area / image_area if image_area > 0 else 0.0
 
 
+def _compute_bbox_fill_and_border_touch(
+    depth_image: o3d.geometry.Image | None = None,
+    image: o3d.geometry.Image | None = None,
+    bg_threshold: int = 245,
+) -> tuple[float, bool]:
+    if depth_image is not None:
+        depth_np = np.asarray(depth_image)
+        if depth_np.ndim == 3 and depth_np.shape[2] == 1:
+            depth_np = depth_np[..., 0]
+        if depth_np.ndim != 2:
+            return 0.0, False
+
+        finite_mask = np.isfinite(depth_np)
+        positive_mask = depth_np > 0
+        valid_mask = finite_mask & positive_mask
+        if not np.any(valid_mask):
+            return 0.0, False
+
+        bg_depth = float(np.max(depth_np[valid_mask]))
+        fg_mask = valid_mask & (depth_np < (bg_depth - 1e-6))
+        if not np.any(fg_mask):
+            return 0.0, False
+
+        fg_indices = np.argwhere(fg_mask)
+        ymin, xmin = fg_indices.min(axis=0)
+        ymax, xmax = fg_indices.max(axis=0)
+        bbox_area = float((ymax - ymin + 1) * (xmax - xmin + 1))
+        image_area = float(depth_np.shape[0] * depth_np.shape[1])
+        fill_ratio = bbox_area / image_area if image_area > 0 else 0.0
+        touches_border = ymin == 0 or xmin == 0 or ymax == (depth_np.shape[0] - 1) or xmax == (depth_np.shape[1] - 1)
+        return fill_ratio, touches_border
+
+    if image is None:
+        return 0.0, False
+
+    image_np = np.asarray(image)
+    if image_np.ndim != 3 or image_np.shape[2] < 3:
+        return 0.0, False
+
+    rgb = image_np[..., :3]
+    non_bg_mask = np.any(rgb < bg_threshold, axis=2)
+    non_bg_indices = np.argwhere(non_bg_mask)
+    if non_bg_indices.size == 0:
+        return 0.0, False
+
+    ymin, xmin = non_bg_indices.min(axis=0)
+    ymax, xmax = non_bg_indices.max(axis=0)
+    bbox_area = float((ymax - ymin + 1) * (xmax - xmin + 1))
+    image_area = float(image_np.shape[0] * image_np.shape[1])
+    fill_ratio = bbox_area / image_area if image_area > 0 else 0.0
+    touches_border = ymin == 0 or xmin == 0 or ymax == (image_np.shape[0] - 1) or xmax == (image_np.shape[1] - 1)
+    return fill_ratio, touches_border
+
+
 def _autotune_camera_radius(
     renderer: o3d.visualization.rendering.OffscreenRenderer,
     center: np.ndarray,
@@ -111,76 +165,116 @@ def _autotune_camera_radius(
     fov_deg: float,
     target_fill_min: float,
     target_fill_max: float,
+    preview_directions: np.ndarray | None = None,
     initial_radius: float = 2.0,
     min_radius: float = 0.25,
     max_radius: float = 8.0,
     max_iter: int = 12,
     log_prefix: str = "",
-) -> tuple[float, float, int]:
-    direction = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+) -> tuple[float, float, float, bool, int]:
+    if preview_directions is None:
+        preview_directions = np.array([[0.0, 0.0, 1.0]], dtype=np.float32)
+    if preview_directions.ndim != 2 or preview_directions.shape[1] != 3:
+        raise ValueError("preview_directions must be an array with shape [N, 3]")
     depth_fallback_logged = False
 
-    def render_fill(radius: float) -> float:
+    def render_fill_stats(radius: float) -> tuple[float, float, bool]:
         nonlocal depth_fallback_logged
-        eye = direction * radius
-        renderer.setup_camera(fov_deg, center, eye, up)
-        preview = renderer.render_to_image()
-        try:
-            preview_depth = renderer.render_to_depth_image()
-            return _compute_bbox_fill_ratio(depth_image=preview_depth)
-        except Exception:
-            if not depth_fallback_logged:
-                LOGGER.warning(
-                    "Depth preview failed for auto-zoom%s; fallback to RGB thresholding only.",
-                    f" ({log_prefix})" if log_prefix else "",
-                    exc_info=True,
-                )
-                depth_fallback_logged = True
-            return _compute_bbox_fill_ratio(image=preview)
+        fill_values: list[float] = []
+        border_touches = False
+        for direction in preview_directions:
+            eye = direction * radius
+            renderer.setup_camera(fov_deg, center, eye, up)
+            preview = renderer.render_to_image()
+            try:
+                preview_depth = renderer.render_to_depth_image()
+                fill_ratio, touches_border = _compute_bbox_fill_and_border_touch(depth_image=preview_depth)
+                fill_values.append(fill_ratio)
+                border_touches = border_touches or touches_border
+            except Exception:
+                if not depth_fallback_logged:
+                    LOGGER.warning(
+                        "Depth preview failed for auto-zoom%s; fallback to RGB thresholding only.",
+                        f" ({log_prefix})" if log_prefix else "",
+                        exc_info=True,
+                    )
+                    depth_fallback_logged = True
+                fill_ratio, touches_border = _compute_bbox_fill_and_border_touch(image=preview)
+                fill_values.append(fill_ratio)
+                border_touches = border_touches or touches_border
+
+        if not fill_values:
+            return 0.0, 0.0, False
+        return float(np.min(fill_values)), float(np.max(fill_values)), border_touches
 
     lo = min_radius
     hi = max_radius
     current_radius = float(np.clip(initial_radius, lo, hi))
-    current_fill = render_fill(current_radius)
-    trace: list[tuple[int, float, float]] = [(0, current_radius, current_fill)]
+    current_fill_min, current_fill_max, current_touches_border = render_fill_stats(current_radius)
+    trace: list[tuple[int, float, float, float, bool]] = [
+        (0, current_radius, current_fill_min, current_fill_max, current_touches_border)
+    ]
     best_radius = current_radius
-    best_fill = current_fill
-    best_gap = 0.0 if target_fill_min <= best_fill <= target_fill_max else min(
-        abs(best_fill - target_fill_min),
-        abs(best_fill - target_fill_max),
+    best_fill_min = current_fill_min
+    best_fill_max = current_fill_max
+    best_touches_border = current_touches_border
+    best_penalty = (
+        (1.0 if current_touches_border else 0.0)
+        + max(0.0, current_fill_max - target_fill_max)
+        + max(0.0, target_fill_min - current_fill_min)
     )
 
-    if target_fill_min <= current_fill <= target_fill_max:
-        trace_text = ", ".join([f"iter={it}:radius={rad:.4f},fill_ratio={fill:.4f}" for it, rad, fill in trace])
+    if (not current_touches_border) and target_fill_min <= current_fill_min and current_fill_max <= target_fill_max:
+        trace_text = ", ".join(
+            [
+                f"iter={it}:radius={rad:.4f},fill_min={fill_min:.4f},fill_max={fill_max:.4f},touch={touch}"
+                for it, rad, fill_min, fill_max, touch in trace
+            ]
+        )
         LOGGER.info("Auto-zoom trace%s %s", f" ({log_prefix})" if log_prefix else "", trace_text)
-        return best_radius, best_fill, 0
+        return best_radius, best_fill_min, best_fill_max, best_touches_border, 0
 
     for it in range(1, max_iter + 1):
-        if current_fill < target_fill_min:
+        if current_touches_border or current_fill_max > target_fill_max:
+            lo = current_radius
+        elif current_fill_min < target_fill_min:
             hi = current_radius
         else:
-            lo = current_radius
+            break
         current_radius = (lo + hi) * 0.5
-        current_fill = render_fill(current_radius)
-        trace.append((it, current_radius, current_fill))
+        current_fill_min, current_fill_max, current_touches_border = render_fill_stats(current_radius)
+        trace.append((it, current_radius, current_fill_min, current_fill_max, current_touches_border))
 
-        gap = 0.0 if target_fill_min <= current_fill <= target_fill_max else min(
-            abs(current_fill - target_fill_min),
-            abs(current_fill - target_fill_max),
+        penalty = (
+            (1.0 if current_touches_border else 0.0)
+            + max(0.0, current_fill_max - target_fill_max)
+            + max(0.0, target_fill_min - current_fill_min)
         )
-        if gap < best_gap:
+        if penalty < best_penalty:
             best_radius = current_radius
-            best_fill = current_fill
-            best_gap = gap
+            best_fill_min = current_fill_min
+            best_fill_max = current_fill_max
+            best_touches_border = current_touches_border
+            best_penalty = penalty
 
-        if target_fill_min <= current_fill <= target_fill_max:
-            trace_text = ", ".join([f"iter={trace_it}:radius={rad:.4f},fill_ratio={fill:.4f}" for trace_it, rad, fill in trace])
+        if (not current_touches_border) and target_fill_min <= current_fill_min and current_fill_max <= target_fill_max:
+            trace_text = ", ".join(
+                [
+                    f"iter={trace_it}:radius={rad:.4f},fill_min={fill_min:.4f},fill_max={fill_max:.4f},touch={touch}"
+                    for trace_it, rad, fill_min, fill_max, touch in trace
+                ]
+            )
             LOGGER.info("Auto-zoom trace%s %s", f" ({log_prefix})" if log_prefix else "", trace_text)
-            return current_radius, current_fill, it
+            return current_radius, current_fill_min, current_fill_max, current_touches_border, it
 
-    trace_text = ", ".join([f"iter={it}:radius={rad:.4f},fill_ratio={fill:.4f}" for it, rad, fill in trace])
+    trace_text = ", ".join(
+        [
+            f"iter={it}:radius={rad:.4f},fill_min={fill_min:.4f},fill_max={fill_max:.4f},touch={touch}"
+            for it, rad, fill_min, fill_max, touch in trace
+        ]
+    )
     LOGGER.info("Auto-zoom trace%s %s", f" ({log_prefix})" if log_prefix else "", trace_text)
-    return best_radius, best_fill, max_iter
+    return best_radius, best_fill_min, best_fill_max, best_touches_border, max_iter
 
 
 def _render_scale_views(
@@ -231,6 +325,7 @@ def render_specimen(
     loose_fill_max: float,
     up_fill_min: float,
     up_fill_max: float,
+    auto_zoom_probes: int,
 ) -> tuple[bool, list[dict[str, str | float | bool | int]]]:
     mesh_rel = mesh_path.relative_to(input_root)
     sid = mesh_rel.stem
@@ -306,24 +401,32 @@ def render_specimen(
         scale_target_fill_max = float(scale_cfg["target_fill_max"])
 
         final_radius = 2.0
-        preview_fill_ratio = float("nan")
+        preview_fill_min = float("nan")
+        preview_fill_max = float("nan")
+        preview_touches_border = False
         if auto_zoom:
-            final_radius, preview_fill_ratio, iters = _autotune_camera_radius(
+            probe_count = max(1, min(auto_zoom_probes, views))
+            probe_dirs = fibonacci_sphere_points(probe_count, radius=1.0).astype(np.float32)
+            final_radius, preview_fill_min, preview_fill_max, preview_touches_border, iters = _autotune_camera_radius(
                 renderer=renderer,
                 center=center,
                 up=up,
                 fov_deg=fov_deg,
                 target_fill_min=scale_target_fill_min,
                 target_fill_max=scale_target_fill_max,
+                preview_directions=probe_dirs,
                 log_prefix=f"{mesh_rel.as_posix()}:{scale_name}",
             )
             LOGGER.info(
-                "Auto-zoom specimen=%s scale=%s fill_ratio=%.4f final_radius=%.4f iterations=%d target=[%.2f, %.2f]",
+                "Auto-zoom specimen=%s scale=%s fill_min=%.4f fill_max=%.4f final_radius=%.4f iterations=%d probes=%d touches_border=%s target=[%.2f, %.2f]",
                 mesh_rel.as_posix(),
                 scale_name,
-                preview_fill_ratio,
+                preview_fill_min,
+                preview_fill_max,
                 final_radius,
                 iters,
+                probe_count,
+                preview_touches_border,
                 scale_target_fill_min,
                 scale_target_fill_max,
             )
@@ -349,7 +452,9 @@ def render_specimen(
                 "appearance": appearance,
                 "scale": scale_name,
                 "scale_view_count": scale_views,
-                "preview_fill_ratio": preview_fill_ratio,
+                "preview_fill_min": preview_fill_min,
+                "preview_fill_max": preview_fill_max,
+                "preview_touches_border": preview_touches_border,
                 "final_radius": final_radius,
                 "target_fill_min": scale_target_fill_min,
                 "target_fill_max": scale_target_fill_max,
@@ -379,6 +484,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auto-zoom", action="store_true", help="Automatically tune camera radius per specimen.")
     parser.add_argument("--target-fill-min", type=float, default=0.20, help="Minimum target preview fill ratio.")
     parser.add_argument("--target-fill-max", type=float, default=0.35, help="Maximum target preview fill ratio.")
+    parser.add_argument(
+        "--auto-zoom-probes",
+        type=int,
+        default=12,
+        help="Number of preview directions used to determine per-specimen auto-zoom radius.",
+    )
     parser.add_argument(
         "--multiscale-zoom",
         action="store_true",
@@ -432,6 +543,8 @@ def main() -> None:
             raise ValueError("--up-fill-min / --up-fill-max must satisfy 0 < min < max < 1")
         if not args.loose_fill_max < args.up_fill_min:
             raise ValueError("--multiscale-zoom requires --loose-fill-max < --up-fill-min")
+    if args.auto_zoom_probes < 1:
+        raise ValueError("--auto-zoom-probes must be >= 1")
 
     ensure_dir(args.output_dir)
     LOGGER.info("Rendering appearance: %s", args.appearance)
@@ -466,6 +579,7 @@ def main() -> None:
             loose_fill_max=args.loose_fill_max,
             up_fill_min=args.up_fill_min,
             up_fill_max=args.up_fill_max,
+            auto_zoom_probes=args.auto_zoom_probes,
         )
         zoom_rows.extend(specimen_zoom_rows)
         if ok:
@@ -481,7 +595,9 @@ def main() -> None:
                 "appearance",
                 "scale",
                 "scale_view_count",
-                "preview_fill_ratio",
+                "preview_fill_min",
+                "preview_fill_max",
+                "preview_touches_border",
                 "final_radius",
                 "target_fill_min",
                 "target_fill_max",
