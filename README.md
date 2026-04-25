@@ -64,7 +64,7 @@ pip install -r requirements.txt
 ## 主解析の実行例
 1. レンダ
 ```bash
-python -m src.render_multiview --in data/meshes --out data/renders --views 12 --size 518 --auto-zoom
+python -m src.render_multiview --in data/meshes --out data/renders --views 12 --size 518 --auto-zoom --auto-zoom-probes 8
 ```
 
 レンダ時の主なCLI補足:
