@@ -9,7 +9,7 @@ import numpy as np
 import open3d as o3d
 from tqdm import tqdm
 
-from src.utils.geometry import fibonacci_sphere_points, load_geometry, normalize_geometry
+from src.utils.geometry import fibonacci_sphere_points, get_points, load_geometry, normalize_geometry
 from src.utils.io import ensure_dir, list_mesh_files, set_seed, setup_logging
 
 LOGGER = logging.getLogger(__name__)
@@ -352,6 +352,18 @@ def _apply_auto_zoom_safety_adjustment(
     return radius, border_touch_count, safety_steps_used, fill_min, fill_max
 
 
+def _compute_safe_min_camera_radius(
+    geom: o3d.geometry.Geometry,
+    min_radius_floor: float = 0.25,
+    margin_ratio: float = 0.05,
+) -> float:
+    points = get_points(geom)
+    max_norm = float(np.max(np.linalg.norm(points, axis=1)))
+    if not np.isfinite(max_norm) or max_norm <= 0:
+        return min_radius_floor
+    return max(min_radius_floor, max_norm * (1.0 + margin_ratio))
+
+
 def _render_scale_views(
     renderer: o3d.visualization.rendering.OffscreenRenderer,
     scene: o3d.visualization.rendering.Open3DScene,
@@ -509,6 +521,7 @@ def render_specimen(
         safety_steps_used = 0
         initial_autozoom_radius = float("nan")
         if auto_zoom:
+            safe_min_radius = _compute_safe_min_camera_radius(geom)
             probe_count = max(1, min(auto_zoom_probes, scale_views))
             # Keep --auto-zoom-probes for backward compatibility; use final
             # render directions to avoid probe/view mismatch misses.
@@ -521,9 +534,19 @@ def render_specimen(
                 target_fill_min=scale_target_fill_min,
                 target_fill_max=scale_target_fill_max,
                 preview_directions=probe_dirs,
+                min_radius=safe_min_radius,
                 log_prefix=f"{mesh_rel.as_posix()}:{scale_name}",
             )
             initial_autozoom_radius = final_radius
+            if final_radius < safe_min_radius:
+                LOGGER.warning(
+                    "Auto-zoom radius clamped to safe minimum for %s scale=%s: %.4f -> %.4f",
+                    mesh_rel.as_posix(),
+                    scale_name,
+                    final_radius,
+                    safe_min_radius,
+                )
+                final_radius = safe_min_radius
             final_radius, postcheck_border_touch_count, safety_steps_used, preview_fill_min, preview_fill_max = (
                 _apply_auto_zoom_safety_adjustment(
                     renderer=renderer,
@@ -537,13 +560,14 @@ def render_specimen(
                 )
             )
             LOGGER.info(
-                "Auto-zoom specimen=%s scale=%s fill_min=%.4f fill_max=%.4f initial_radius=%.4f safety_radius=%.4f iterations=%d probes=%d views_for_zoom=%d safety_steps=%d final_border_touches=%d target=[%.2f, %.2f]",
+                "Auto-zoom specimen=%s scale=%s fill_min=%.4f fill_max=%.4f initial_radius=%.4f safety_radius=%.4f safe_min_radius=%.4f iterations=%d probes=%d views_for_zoom=%d safety_steps=%d final_border_touches=%d target=[%.2f, %.2f]",
                 mesh_rel.as_posix(),
                 scale_name,
                 preview_fill_min,
                 preview_fill_max,
                 initial_autozoom_radius,
                 final_radius,
+                safe_min_radius,
                 iters,
                 probe_count,
                 scale_views,
