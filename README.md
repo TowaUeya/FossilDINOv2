@@ -92,7 +92,7 @@ python -m src.extract_features --renders data/renders --out data/features --mode
 python -m src.pool_embeddings --features data/features --out data/embeddings --pool mean
 ```
 
-4. 固定設定クラスタリング
+4. 固定設定クラスタリング(cluster_default_l2_eom_mcs10)
 ```bash
 python -m src.cluster_baseline --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --out results/baseline_cluster
 ```
