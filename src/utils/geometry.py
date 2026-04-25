@@ -137,11 +137,11 @@ def normalize_geometry(
     return geom
 
 
-def fibonacci_sphere_points(n_views: int, radius: float = 2.0) -> list[np.ndarray]:
+def fibonacci_sphere_points(n_views: int, radius: float = 2.0) -> np.ndarray:
     if n_views < 1:
         raise ValueError("n_views must be >= 1")
 
-    points = []
+    points: list[np.ndarray] = []
     phi = math.pi * (3.0 - math.sqrt(5.0))
     for i in range(n_views):
         y = 1 - (i / float(max(n_views - 1, 1))) * 2
@@ -150,4 +150,4 @@ def fibonacci_sphere_points(n_views: int, radius: float = 2.0) -> list[np.ndarra
         x = math.cos(theta) * r
         z = math.sin(theta) * r
         points.append(np.array([x, y, z], dtype=np.float32) * radius)
-    return points
+    return np.asarray(points, dtype=np.float32)
