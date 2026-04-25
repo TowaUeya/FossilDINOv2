@@ -54,7 +54,39 @@ def _make_material_for_appearance(
     return mat
 
 
-def _compute_bbox_fill_ratio(image: o3d.geometry.Image, bg_threshold: int = 245) -> float:
+def _compute_bbox_fill_ratio(
+    depth_image: o3d.geometry.Image | None = None,
+    image: o3d.geometry.Image | None = None,
+    bg_threshold: int = 245,
+) -> float:
+    if depth_image is not None:
+        depth_np = np.asarray(depth_image)
+        if depth_np.ndim == 3 and depth_np.shape[2] == 1:
+            depth_np = depth_np[..., 0]
+        if depth_np.ndim != 2:
+            return 0.0
+
+        finite_mask = np.isfinite(depth_np)
+        positive_mask = depth_np > 0
+        valid_mask = finite_mask & positive_mask
+        if not np.any(valid_mask):
+            return 0.0
+
+        bg_depth = float(np.max(depth_np[valid_mask]))
+        fg_mask = valid_mask & (depth_np < (bg_depth - 1e-6))
+        if not np.any(fg_mask):
+            return 0.0
+
+        fg_indices = np.argwhere(fg_mask)
+        ymin, xmin = fg_indices.min(axis=0)
+        ymax, xmax = fg_indices.max(axis=0)
+        bbox_area = float((ymax - ymin + 1) * (xmax - xmin + 1))
+        image_area = float(depth_np.shape[0] * depth_np.shape[1])
+        return bbox_area / image_area if image_area > 0 else 0.0
+
+    if image is None:
+        return 0.0
+
     image_np = np.asarray(image)
     if image_np.ndim != 3 or image_np.shape[2] < 3:
         return 0.0
@@ -83,19 +115,34 @@ def _autotune_camera_radius(
     min_radius: float = 0.25,
     max_radius: float = 8.0,
     max_iter: int = 12,
+    log_prefix: str = "",
 ) -> tuple[float, float, int]:
     direction = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    depth_fallback_logged = False
 
     def render_fill(radius: float) -> float:
+        nonlocal depth_fallback_logged
         eye = direction * radius
         renderer.setup_camera(fov_deg, center, eye, up)
         preview = renderer.render_to_image()
-        return _compute_bbox_fill_ratio(preview)
+        try:
+            preview_depth = renderer.render_to_depth_image()
+            return _compute_bbox_fill_ratio(depth_image=preview_depth)
+        except Exception:
+            if not depth_fallback_logged:
+                LOGGER.warning(
+                    "Depth preview failed for auto-zoom%s; fallback to RGB thresholding only.",
+                    f" ({log_prefix})" if log_prefix else "",
+                    exc_info=True,
+                )
+                depth_fallback_logged = True
+            return _compute_bbox_fill_ratio(image=preview)
 
     lo = min_radius
     hi = max_radius
     current_radius = float(np.clip(initial_radius, lo, hi))
     current_fill = render_fill(current_radius)
+    trace: list[tuple[int, float, float]] = [(0, current_radius, current_fill)]
     best_radius = current_radius
     best_fill = current_fill
     best_gap = 0.0 if target_fill_min <= best_fill <= target_fill_max else min(
@@ -104,6 +151,8 @@ def _autotune_camera_radius(
     )
 
     if target_fill_min <= current_fill <= target_fill_max:
+        trace_text = ", ".join([f"iter={it}:radius={rad:.4f},fill_ratio={fill:.4f}" for it, rad, fill in trace])
+        LOGGER.info("Auto-zoom trace%s %s", f" ({log_prefix})" if log_prefix else "", trace_text)
         return best_radius, best_fill, 0
 
     for it in range(1, max_iter + 1):
@@ -113,6 +162,7 @@ def _autotune_camera_radius(
             lo = current_radius
         current_radius = (lo + hi) * 0.5
         current_fill = render_fill(current_radius)
+        trace.append((it, current_radius, current_fill))
 
         gap = 0.0 if target_fill_min <= current_fill <= target_fill_max else min(
             abs(current_fill - target_fill_min),
@@ -124,8 +174,12 @@ def _autotune_camera_radius(
             best_gap = gap
 
         if target_fill_min <= current_fill <= target_fill_max:
+            trace_text = ", ".join([f"iter={trace_it}:radius={rad:.4f},fill_ratio={fill:.4f}" for trace_it, rad, fill in trace])
+            LOGGER.info("Auto-zoom trace%s %s", f" ({log_prefix})" if log_prefix else "", trace_text)
             return current_radius, current_fill, it
 
+    trace_text = ", ".join([f"iter={it}:radius={rad:.4f},fill_ratio={fill:.4f}" for it, rad, fill in trace])
+    LOGGER.info("Auto-zoom trace%s %s", f" ({log_prefix})" if log_prefix else "", trace_text)
     return best_radius, best_fill, max_iter
 
 
@@ -261,6 +315,7 @@ def render_specimen(
                 fov_deg=fov_deg,
                 target_fill_min=scale_target_fill_min,
                 target_fill_max=scale_target_fill_max,
+                log_prefix=f"{mesh_rel.as_posix()}:{scale_name}",
             )
             LOGGER.info(
                 "Auto-zoom specimen=%s scale=%s fill_ratio=%.4f final_radius=%.4f iterations=%d target=[%.2f, %.2f]",
@@ -435,6 +490,33 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(zoom_rows)
     LOGGER.info("Auto-zoom report written: %s", zoom_report_path)
+    if args.multiscale_zoom and args.auto_zoom:
+        radii_by_specimen: dict[str, dict[str, float]] = {}
+        for row in zoom_rows:
+            specimen = str(row["specimen"])
+            scale = str(row["scale"])
+            final_radius = float(row["final_radius"])
+            radii_by_specimen.setdefault(specimen, {})[scale] = final_radius
+
+        same_radius_specimens = []
+        different_radius_count = 0
+        for specimen, scales in radii_by_specimen.items():
+            if "loose" in scales and "up" in scales:
+                if np.isclose(scales["loose"], scales["up"]):
+                    same_radius_specimens.append(specimen)
+                else:
+                    different_radius_count += 1
+
+        LOGGER.info(
+            "Multiscale radius check: loose/up different for %d specimens, equal for %d specimens.",
+            different_radius_count,
+            len(same_radius_specimens),
+        )
+        if same_radius_specimens:
+            LOGGER.warning(
+                "loose/up final_radius are equal for specimens: %s",
+                ", ".join(same_radius_specimens[:20]),
+            )
     LOGGER.info("Rendered %d/%d specimens", success, len(mesh_files))
 
 
