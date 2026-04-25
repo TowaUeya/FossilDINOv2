@@ -364,7 +364,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--in", dest="input_dir", type=Path, required=True, help="Input directory with .ply/.obj/.stl/.off")
     parser.add_argument("--out", dest="output_dir", type=Path, required=True, help="Output directory for rendered PNGs")
     parser.add_argument("--views", type=int, default=12)
-    parser.add_argument("--size", type=int, default=384)
+    parser.add_argument("--size", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--appearance",
@@ -377,8 +377,8 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--auto-zoom", action="store_true", help="Automatically tune camera radius per specimen.")
-    parser.add_argument("--target-fill-min", type=float, default=0.35, help="Minimum target preview fill ratio.")
-    parser.add_argument("--target-fill-max", type=float, default=0.55, help="Maximum target preview fill ratio.")
+    parser.add_argument("--target-fill-min", type=float, default=0.20, help="Minimum target preview fill ratio.")
+    parser.add_argument("--target-fill-max", type=float, default=0.35, help="Maximum target preview fill ratio.")
     parser.add_argument(
         "--multiscale-zoom",
         action="store_true",
