@@ -129,6 +129,35 @@ def _autotune_camera_radius(
     return best_radius, best_fill, max_iter
 
 
+def _render_scale_views(
+    renderer: o3d.visualization.rendering.OffscreenRenderer,
+    specimen_out_dir: Path,
+    sid: str,
+    scale_name: str,
+    views: int,
+    center: np.ndarray,
+    up: np.ndarray,
+    fov_deg: float,
+    final_radius: float,
+    multiscale: bool,
+) -> bool:
+    camera_positions = fibonacci_sphere_points(views, radius=final_radius)
+    ok = True
+    for i, eye in enumerate(camera_positions):
+        try:
+            renderer.setup_camera(fov_deg, center, eye, up)
+            img = renderer.render_to_image()
+            if multiscale:
+                out_path = specimen_out_dir / f"{sid}_{scale_name}_view{i:02d}.png"
+            else:
+                out_path = specimen_out_dir / f"{sid}_view{i:02d}.png"
+            o3d.io.write_image(str(out_path), img)
+        except Exception as e:
+            ok = False
+            LOGGER.exception("Render failed specimen=%s scale=%s view=%d: %s", sid, scale_name, i, e)
+    return ok
+
+
 def render_specimen(
     renderer: o3d.visualization.rendering.OffscreenRenderer,
     mesh_path: Path,
@@ -143,7 +172,12 @@ def render_specimen(
     auto_zoom: bool,
     target_fill_min: float,
     target_fill_max: float,
-) -> tuple[bool, float, float]:
+    multiscale_zoom: bool,
+    loose_fill_min: float,
+    loose_fill_max: float,
+    up_fill_min: float,
+    up_fill_max: float,
+) -> tuple[bool, list[dict[str, str | float | bool | int]]]:
     mesh_rel = mesh_path.relative_to(input_root)
     sid = mesh_rel.stem
     specimen_out_dir = out_dir / mesh_rel.parent
@@ -152,7 +186,7 @@ def render_specimen(
         geom = normalize_geometry(load_geometry(mesh_path))
     except Exception as e:
         LOGGER.exception("Failed to load/normalize %s: %s", mesh_path, e)
-        return False, 0.0, float("nan")
+        return False, []
 
     if appearance == "color_lit":
         if isinstance(geom, o3d.geometry.TriangleMesh):
@@ -198,40 +232,76 @@ def render_specimen(
     center = np.array([0.0, 0.0, 0.0], dtype=np.float32)
     up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
     fov_deg = 60.0
-    final_radius = 2.0
-    preview_fill_ratio = float("nan")
+    if multiscale_zoom:
+        views_per_scale = views // 2
+        scale_configs = [
+            {"name": "loose", "views": views_per_scale, "target_fill_min": loose_fill_min, "target_fill_max": loose_fill_max},
+            {"name": "up", "views": views_per_scale, "target_fill_min": up_fill_min, "target_fill_max": up_fill_max},
+        ]
+    else:
+        scale_configs = [
+            {"name": "single", "views": views, "target_fill_min": target_fill_min, "target_fill_max": target_fill_max},
+        ]
 
-    if auto_zoom:
-        final_radius, preview_fill_ratio, iters = _autotune_camera_radius(
+    ok = True
+    zoom_rows: list[dict[str, str | float | bool | int]] = []
+    for scale_cfg in scale_configs:
+        scale_name = str(scale_cfg["name"])
+        scale_views = int(scale_cfg["views"])
+        scale_target_fill_min = float(scale_cfg["target_fill_min"])
+        scale_target_fill_max = float(scale_cfg["target_fill_max"])
+
+        final_radius = 2.0
+        preview_fill_ratio = float("nan")
+        if auto_zoom:
+            final_radius, preview_fill_ratio, iters = _autotune_camera_radius(
+                renderer=renderer,
+                center=center,
+                up=up,
+                fov_deg=fov_deg,
+                target_fill_min=scale_target_fill_min,
+                target_fill_max=scale_target_fill_max,
+            )
+            LOGGER.info(
+                "Auto-zoom specimen=%s scale=%s fill_ratio=%.4f final_radius=%.4f iterations=%d target=[%.2f, %.2f]",
+                mesh_rel.as_posix(),
+                scale_name,
+                preview_fill_ratio,
+                final_radius,
+                iters,
+                scale_target_fill_min,
+                scale_target_fill_max,
+            )
+
+        scale_ok = _render_scale_views(
             renderer=renderer,
+            specimen_out_dir=specimen_out_dir,
+            sid=sid,
+            scale_name=scale_name,
+            views=scale_views,
             center=center,
             up=up,
             fov_deg=fov_deg,
-            target_fill_min=target_fill_min,
-            target_fill_max=target_fill_max,
+            final_radius=final_radius,
+            multiscale=multiscale_zoom,
         )
-        LOGGER.info(
-            "Auto-zoom specimen=%s fill_ratio=%.4f final_radius=%.4f iterations=%d target=[%.2f, %.2f]",
-            mesh_rel.as_posix(),
-            preview_fill_ratio,
-            final_radius,
-            iters,
-            target_fill_min,
-            target_fill_max,
+        ok = ok and scale_ok
+        zoom_rows.append(
+            {
+                "specimen": mesh_rel.as_posix(),
+                "ok": scale_ok,
+                "auto_zoom": auto_zoom,
+                "appearance": appearance,
+                "scale": scale_name,
+                "scale_view_count": scale_views,
+                "preview_fill_ratio": preview_fill_ratio,
+                "final_radius": final_radius,
+                "target_fill_min": scale_target_fill_min,
+                "target_fill_max": scale_target_fill_max,
+            }
         )
 
-    camera_positions = fibonacci_sphere_points(views, radius=final_radius)
-    ok = True
-    for i, eye in enumerate(camera_positions):
-        try:
-            renderer.setup_camera(fov_deg, center, eye, up)
-            img = renderer.render_to_image()
-            out_path = specimen_out_dir / f"{sid}_view{i:02d}.png"
-            o3d.io.write_image(str(out_path), img)
-        except Exception as e:
-            ok = False
-            LOGGER.exception("Render failed %s view %d: %s", mesh_path, i, e)
-    return ok, preview_fill_ratio, final_radius
+    return ok, zoom_rows
 
 
 def parse_args() -> argparse.Namespace:
@@ -254,6 +324,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auto-zoom", action="store_true", help="Automatically tune camera radius per specimen.")
     parser.add_argument("--target-fill-min", type=float, default=0.35, help="Minimum target preview fill ratio.")
     parser.add_argument("--target-fill-max", type=float, default=0.55, help="Maximum target preview fill ratio.")
+    parser.add_argument(
+        "--multiscale-zoom",
+        action="store_true",
+        help=(
+            "Render two auto-zoom scales per specimen: loose and up. "
+            "When enabled, --views must be divisible by the number of scales, "
+            "and each scale gets views / num_scales views."
+        ),
+    )
+    parser.add_argument(
+        "--loose-fill-min",
+        type=float,
+        default=0.35,
+        help="Minimum target bbox fill ratio for the loose scale when --multiscale-zoom is enabled.",
+    )
+    parser.add_argument(
+        "--loose-fill-max",
+        type=float,
+        default=0.55,
+        help="Maximum target bbox fill ratio for the loose scale when --multiscale-zoom is enabled.",
+    )
+    parser.add_argument(
+        "--up-fill-min",
+        type=float,
+        default=0.65,
+        help="Minimum target bbox fill ratio for the up scale when --multiscale-zoom is enabled.",
+    )
+    parser.add_argument(
+        "--up-fill-max",
+        type=float,
+        default=0.85,
+        help="Maximum target bbox fill ratio for the up scale when --multiscale-zoom is enabled.",
+    )
     return parser.parse_args()
 
 
@@ -263,6 +366,17 @@ def main() -> None:
     set_seed(args.seed)
     if not 0 < args.target_fill_min < args.target_fill_max < 1:
         raise ValueError("--target-fill-min / --target-fill-max must satisfy 0 < min < max < 1")
+    if args.multiscale_zoom:
+        if not args.auto_zoom:
+            raise ValueError("--multiscale-zoom requires --auto-zoom")
+        if args.views % 2 != 0:
+            raise ValueError("--multiscale-zoom requires --views to be divisible by 2")
+        if not 0 < args.loose_fill_min < args.loose_fill_max < 1:
+            raise ValueError("--loose-fill-min / --loose-fill-max must satisfy 0 < min < max < 1")
+        if not 0 < args.up_fill_min < args.up_fill_max < 1:
+            raise ValueError("--up-fill-min / --up-fill-max must satisfy 0 < min < max < 1")
+        if not args.loose_fill_max < args.up_fill_min:
+            raise ValueError("--multiscale-zoom requires --loose-fill-max < --up-fill-min")
 
     ensure_dir(args.output_dir)
     LOGGER.info("Rendering appearance: %s", args.appearance)
@@ -274,11 +388,11 @@ def main() -> None:
     renderer = o3d.visualization.rendering.OffscreenRenderer(args.size, args.size)
     renderer.scene.set_background([1.0, 1.0, 1.0, 1.0])
     zoom_report_path = args.output_dir / "auto_zoom_report.csv"
-    zoom_rows: list[dict[str, str | float | bool]] = []
+    zoom_rows: list[dict[str, str | float | bool | int]] = []
 
     success = 0
     for mesh_path in tqdm(mesh_files, desc="Rendering"):
-        ok, fill_ratio, final_radius = render_specimen(
+        ok, specimen_zoom_rows = render_specimen(
             renderer=renderer,
             mesh_path=mesh_path,
             input_root=args.input_dir,
@@ -292,24 +406,31 @@ def main() -> None:
             auto_zoom=args.auto_zoom,
             target_fill_min=args.target_fill_min,
             target_fill_max=args.target_fill_max,
+            multiscale_zoom=args.multiscale_zoom,
+            loose_fill_min=args.loose_fill_min,
+            loose_fill_max=args.loose_fill_max,
+            up_fill_min=args.up_fill_min,
+            up_fill_max=args.up_fill_max,
         )
-        zoom_rows.append(
-            {
-                "specimen": mesh_path.relative_to(args.input_dir).as_posix(),
-                "ok": ok,
-                "auto_zoom": args.auto_zoom,
-                "preview_fill_ratio": fill_ratio,
-                "final_radius": final_radius,
-                "appearance": args.appearance,
-            }
-        )
+        zoom_rows.extend(specimen_zoom_rows)
         if ok:
             success += 1
 
     with zoom_report_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["specimen", "ok", "auto_zoom", "preview_fill_ratio", "final_radius", "appearance"],
+            fieldnames=[
+                "specimen",
+                "ok",
+                "auto_zoom",
+                "appearance",
+                "scale",
+                "scale_view_count",
+                "preview_fill_ratio",
+                "final_radius",
+                "target_fill_min",
+                "target_fill_max",
+            ],
         )
         writer.writeheader()
         writer.writerows(zoom_rows)
