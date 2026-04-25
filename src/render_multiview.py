@@ -15,6 +15,23 @@ from src.utils.io import ensure_dir, list_mesh_files, set_seed, setup_logging
 LOGGER = logging.getLogger(__name__)
 
 
+def _compute_camera_light_direction(eye: np.ndarray) -> np.ndarray:
+    """Return camera-following sun-light direction for stable DINOv2 multi-view renders.
+
+    camera mode follows each view to avoid excessively dark back-side views.
+    world mode keeps fixed world-space lighting for comparison/compatibility.
+    """
+    eye_np = np.asarray(eye, dtype=np.float32)
+    norm = float(np.linalg.norm(eye_np))
+    if norm <= 0:
+        raise ValueError("Camera eye vector has zero norm; cannot compute camera light direction.")
+    eye_dir = eye_np / norm
+
+    # Open3D sun light direction can be visually ambiguous depending on convention.
+    # This sign should illuminate the camera-facing surface; flip if test renders look dark.
+    return -eye_dir
+
+
 def _make_material_for_appearance(
     geom: o3d.geometry.Geometry,
     appearance: str,
@@ -337,6 +354,7 @@ def _apply_auto_zoom_safety_adjustment(
 
 def _render_scale_views(
     renderer: o3d.visualization.rendering.OffscreenRenderer,
+    scene: o3d.visualization.rendering.Open3DScene,
     specimen_out_dir: Path,
     sid: str,
     scale_name: str,
@@ -346,11 +364,30 @@ def _render_scale_views(
     fov_deg: float,
     final_radius: float,
     multiscale: bool,
+    light_mode: str,
+    light_direction: tuple[float, float, float],
+    light_color: tuple[float, float, float],
+    light_intensity: float,
+    lighting_enabled: bool,
 ) -> bool:
     camera_positions = fibonacci_sphere_points(views, radius=final_radius)
     ok = True
     for i, eye in enumerate(camera_positions):
         try:
+            if lighting_enabled:
+                if light_mode == "camera":
+                    camera_light_direction = _compute_camera_light_direction(eye)
+                    scene.scene.set_sun_light(camera_light_direction, light_color, light_intensity)
+                    scene.scene.enable_sun_light(True)
+                    LOGGER.debug("Camera light direction for view %d: %s", i, camera_light_direction.tolist())
+                elif light_mode == "world":
+                    scene.scene.set_sun_light(light_direction, light_color, light_intensity)
+                    scene.scene.enable_sun_light(True)
+                else:
+                    raise ValueError(f"Unsupported light_mode: {light_mode}")
+            else:
+                scene.scene.enable_sun_light(False)
+
             renderer.setup_camera(fov_deg, center, eye, up)
             img = renderer.render_to_image()
             if multiscale:
@@ -374,6 +411,7 @@ def render_specimen(
     light_direction: tuple[float, float, float],
     light_color: tuple[float, float, float],
     light_intensity: float,
+    light_mode: str,
     appearance: str,
     auto_zoom: bool,
     target_fill_min: float,
@@ -435,8 +473,11 @@ def render_specimen(
     scene = renderer.scene
     scene.clear_geometry()
     scene.add_geometry("specimen", geom, mat)
-    scene.scene.set_sun_light(light_direction, light_color, light_intensity)
-    scene.scene.enable_sun_light(True)
+    lighting_enabled = appearance.endswith("_lit")
+    if lighting_enabled:
+        scene.scene.enable_sun_light(True)
+    else:
+        scene.scene.enable_sun_light(False)
 
     center = np.array([0.0, 0.0, 0.0], dtype=np.float32)
     up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -514,6 +555,7 @@ def render_specimen(
 
         scale_ok = _render_scale_views(
             renderer=renderer,
+            scene=scene,
             specimen_out_dir=specimen_out_dir,
             sid=sid,
             scale_name=scale_name,
@@ -523,6 +565,11 @@ def render_specimen(
             fov_deg=fov_deg,
             final_radius=final_radius,
             multiscale=multiscale_zoom,
+            light_mode=light_mode,
+            light_direction=light_direction,
+            light_color=light_color,
+            light_intensity=light_intensity,
+            lighting_enabled=lighting_enabled,
         )
         ok = ok and scale_ok
         zoom_rows.append(
@@ -531,6 +578,7 @@ def render_specimen(
                 "ok": scale_ok,
                 "auto_zoom": auto_zoom,
                 "appearance": appearance,
+                "light_mode": light_mode,
                 "scale": scale_name,
                 "scale_view_count": scale_views,
                 "preview_fill_min": preview_fill_min,
@@ -554,6 +602,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--views", type=int, default=12)
     parser.add_argument("--size", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--light-mode",
+        choices=["camera", "world"],
+        default="camera",
+        help=(
+            "Lighting mode for lit rendering. "
+            "camera: update sun light direction for each view to illuminate the camera-facing surface "
+            "(camera-following directional light; avoids excessively dark back-side views; intended for stable DINOv2 multi-view input). "
+            "world: use the fixed world-space sun light direction for all views "
+            "(preserves previous behavior; useful for comparison / compatibility)."
+        ),
+    )
     parser.add_argument(
         "--appearance",
         choices=["gray_lit", "color_lit"],
@@ -647,6 +707,7 @@ def main() -> None:
 
     ensure_dir(args.output_dir)
     LOGGER.info("Rendering appearance: %s", args.appearance)
+    LOGGER.info("Rendering light mode: %s", args.light_mode)
     mesh_files = list_mesh_files(args.input_dir)
     if not mesh_files:
         LOGGER.warning("No mesh files found in %s", args.input_dir)
@@ -669,6 +730,7 @@ def main() -> None:
             light_direction=(0.577, -0.577, -0.577),
             light_color=(1.0, 1.0, 1.0),
             light_intensity=50000,
+            light_mode=args.light_mode,
             appearance=args.appearance,
             auto_zoom=args.auto_zoom,
             target_fill_min=args.target_fill_min,
@@ -694,6 +756,7 @@ def main() -> None:
                 "ok",
                 "auto_zoom",
                 "appearance",
+                "light_mode",
                 "scale",
                 "scale_view_count",
                 "preview_fill_min",
