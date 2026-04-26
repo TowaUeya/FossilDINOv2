@@ -97,6 +97,34 @@ python -m src.pool_embeddings --features data/features --out data/embeddings --p
 python -m src.cluster_baseline --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --out results/baseline_cluster
 ```
 
+`src.cluster_baseline` の設定は CLI 引数で指定できます（デフォルト値は固定設定と同じです）。主な引数は以下です。
+
+| 引数 | 型 / 選択肢 | デフォルト | 説明 |
+|---|---|---:|---|
+| `--emb` | `Path` | 必須 | 埋め込み `.npy` ファイル（または探索開始パス） |
+| `--ids` | `Path` | 必須 | 標本 ID 一覧ファイル |
+| `--out` | `Path` | 必須 | 出力ディレクトリ |
+| `--normalize` | `none` / `l2` | `l2` | クラスタリング前の正規化方法 |
+| `--method` | `hdbscan` | `hdbscan` | 手法（現状 `hdbscan` のみ） |
+| `--metric` | `euclidean` | `euclidean` | 距離尺度 |
+| `--min_cluster_size` | `int` | `10` | HDBSCAN の最小クラスタサイズ |
+| `--min_samples` | `int` | `None` | HDBSCAN の `min_samples`（未指定時はライブラリ既定挙動） |
+| `--selection_method` | `eom` | `eom` | HDBSCAN のクラスタ選択法 |
+
+固定設定（`cluster_default_l2_eom_mcs10`）を明示する場合の実行例:
+
+```bash
+python -m src.cluster_baseline \
+  --emb data/embeddings/embeddings.npy \
+  --ids data/embeddings/ids.txt \
+  --out results/baseline_cluster \
+  --metric euclidean \
+  --normalize l2 \
+  --min_cluster_size 10 \
+  --min_samples 5 \
+  --selection_method eom
+```
+
 5. 埋め込み空間可視化
 ```bash
 python -m src.visualize_embedding_space --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --format both --out results/vis
