@@ -42,6 +42,8 @@ project_root/
     extract_features.py
     pool_embeddings.py
     cluster_baseline.py
+    cluster_recursive_hdbscan.py
+    cluster_branch_detector.py
     evaluate_with_labels.py
     visualize_embedding_space.py
     explain_vit_attention.py
@@ -121,8 +123,152 @@ python -m src.cluster_baseline \
   --metric euclidean \
   --normalize l2 \
   --min_cluster_size 10 \
+  --selection_method eom
+```
+
+### HDBSCAN tree 上の局所構造を拾うための補助方針
+
+固定設定 `cluster_default_l2_eom_mcs10` は、DINOv2 埋め込み空間に対する最小限の HDBSCAN baseline です。一方で、HDBSCAN の single linkage tree / condensed tree には、EOM の最終ラベルでは巨大クラスタに吸収されるものの、局所的には有意味に見える枝・谷・高密度部分構造が現れる場合があります。
+
+この補助比較は、クラスタリング結果を都合よく調整するためのものではありません。tree を目視して恣意的に選ぶのではなく、あらかじめ決めた固定ルールに基づいて局所構造を抽出し、分類群との対応を後から評価できるかを検証するためのものです。ラベルは split 条件や採用条件の決定には使わず、評価専用にします。
+
+優先順位は以下とします。
+
+```text
+第一優先:
+  selection_method="leaf"
+
+第二優先:
+  recursive HDBSCAN
+
+第三優先:
+  BranchDetector
+
+第四優先:
+  独自 valley-score 抽出
+```
+
+#### 1. leaf selection
+
+EOM は安定した大きなクラスタを選びやすいため、巨大クラスタの内部にある小さく均質な構造を吸収する場合があります。`selection_method="leaf"` は、condensed tree の葉に近い細かなクラスタを選びやすく、EOM で mixed cluster が大きく残る場合の第一候補とします。
+
+```bash
+python -m src.cluster_baseline \
+  --emb data/embeddings/embeddings.npy \
+  --ids data/embeddings/ids.txt \
+  --out results/cluster_leaf \
+  --metric euclidean \
+  --normalize l2 \
+  --min_cluster_size 10 \
+  --min_samples 5 \
   --selection_method leaf
 ```
+
+ただし、leaf は過分割しやすいため、`n_clusters`, `noise_ratio`, `largest_cluster_fraction`, `cluster_purity`, `ARI / NMI`, category-wise purity, 代表画像または近傍例を確認します。
+
+#### 2. recursive HDBSCAN
+
+recursive HDBSCAN は、全体に HDBSCAN をかけた後、大きすぎる mixed cluster だけを対象に、その内部で再度 HDBSCAN を実行する補助方針です。全クラスタを無差別に再分割するのではなく、split 対象を教師なしの固定ルールで限定します。
+
+split 対象は以下とします。
+
+```text
+split対象:
+  cluster_size > max(全体の20%, median_non_noise_cluster_size × 5)
+```
+
+この条件は次を意図しています。
+
+- 全体の 20% を超える巨大クラスタは、複数カテゴリを吸収している可能性が高い
+- 非ノイズクラスタの中央値の 5 倍を超えるクラスタは、他クラスタと比較して過大であり、内部構造を持つ可能性がある
+- これらはラベルを使わない教師なし条件である
+
+子クラスタ採用条件は以下とします。
+
+```text
+子クラスタ採用条件:
+  - 子クラスタ数 >= 2
+  - 最大子クラスタ比率 < 0.8
+  - ノイズ率 < 0.5
+  - largest_child_fraction が下がる
+  - 子クラスタの silhouette / intra-distance が改善
+  - ノイズ率が増えすぎない
+  - 小さすぎるクラスタを量産しない
+```
+
+ラベルありデータでは、採用後に以下を確認します。
+
+```text
+ラベルあり評価での確認:
+  - 親クラスタより cluster purity が改善するか
+  - ARI / NMI が悪化しないか
+  - category-wise purity が改善するか
+```
+
+ラベルは recursive split の採用判定には使わず、評価専用にします。
+補助解析（recursive / BranchDetector）も `src.cluster_baseline` から引数で切り替えて実行します。
+
+実行例:
+
+```bash
+python -m src.cluster_baseline \
+  --emb data/embeddings/embeddings.npy \
+  --ids data/embeddings/ids.txt \
+  --out results/cluster_recursive \
+  --metric euclidean \
+  --normalize l2 \
+  --min_cluster_size 10 \
+  --min_samples 5 \
+  --selection_method leaf \
+  --auxiliary_method recursive \
+  --max_depth 1
+```
+
+#### 3. BranchDetector
+
+BranchDetector は、HDBSCAN 後のクラスタ内部にある branch / branching hierarchy を検出するための後処理です。recursive HDBSCAN が巨大クラスタ内部を再度「密度クラスタリング」で分ける方法であるのに対し、BranchDetector はクラスタ内部の枝分かれ構造を検出する点が異なります。
+
+実行例:
+
+```bash
+python -m src.cluster_baseline \
+  --emb data/embeddings/embeddings.npy \
+  --ids data/embeddings/ids.txt \
+  --out results/cluster_branches \
+  --metric euclidean \
+  --normalize l2 \
+  --min_cluster_size 10 \
+  --min_samples 5 \
+  --selection_method eom \
+  --auxiliary_method branch \
+  --branch_min_cluster_size 10 \
+  --branch_selection_method eom
+```
+
+| 方法 | 何を拾うか | 向いている状況 | 注意点 |
+| --- | --- | --- | --- |
+| leaf | condensed tree の細かい葉クラスタ | EOM が巨大クラスタを拾いすぎる場合 | 過分割しやすい |
+| recursive HDBSCAN | 巨大クラスタ内部の局所密度クラスタ | mixed cluster を再分割したい場合 | split条件と採用条件を固定する必要 |
+| BranchDetector | クラスタ内部の枝分かれ構造 | 密度的にはつながるが branch 構造を持つ場合 | category-like cluster 抽出とは目的が少し異なる |
+| valley-score | single linkage tree 上の谷 | tree の局所的な凹みを明示的に拾いたい場合 | 独自指標なので説明責任が重い |
+
+BranchDetector は主解析には入れず、クラスタ内部構造の補助的・探索的な比較対象として扱います。
+`hdbscan` のバージョンによって `BranchDetector` が未実装の場合は、`src.cluster_branch_detector` はアップグレードを促す明確なエラーを返します。
+
+#### 4. 独自 valley-score 抽出
+
+single linkage tree 上の局所的な「谷」を明示的に拾う最終手段として、以下のような候補スコアを検討します。
+
+```text
+candidate cluster:
+  - size >= min_cluster_size
+  - internal_height が低い
+  - parent_merge_height が高い
+  - gap = parent_merge_height - internal_height が大きい
+  - score = gap × log(size)
+```
+
+これは tree 上の凹みを定量化する独自指標の案であるため、主解析ではなく将来拡張または補助解析として扱います。
 
 5. 埋め込み空間可視化
 ```bash
@@ -138,6 +284,16 @@ python -m src.explain_vit_attention --renders data/renders --features data/featu
 7. HDBSCAN tree 可視化
 ```bash
 python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --out results/trees --selection_method leaf --single_linkage_truncate_mode lastp --single_linkage_p 30
+```
+
+補助解析の結果を重ねて確認する場合は、`--clusters` に補助解析の `clusters.csv` を渡します（tree 自体は指定した HDBSCAN 設定から再計算されます）。
+
+```bash
+# recursive HDBSCAN の結果を重ねる例
+python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/cluster_recursive/clusters.csv --out results/trees_recursive --selection_method leaf --single_linkage_truncate_mode lastp --single_linkage_p 30
+
+# BranchDetector の subgroup を重ねる例
+python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/cluster_branches/clusters.csv --out results/trees_branch --selection_method eom --single_linkage_truncate_mode lastp --single_linkage_p 30
 ```
 
 8. ラベルあり評価（検証のみ）
