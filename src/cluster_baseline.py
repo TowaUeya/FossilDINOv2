@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--metric", choices=["euclidean"], default="euclidean")
     p.add_argument("--min_cluster_size", type=int, default=10)
     p.add_argument("--min_samples", type=int, default=None)
-    p.add_argument("--selection_method", choices=["eom"], default="eom")
+    p.add_argument("--selection_method", choices=["eom", "leaf"], default="eom")
     return p.parse_args()
 
 

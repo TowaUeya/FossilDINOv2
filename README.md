@@ -109,7 +109,7 @@ python -m src.cluster_baseline --emb data/embeddings/embeddings.npy --ids data/e
 | `--metric` | `euclidean` | `euclidean` | 距離尺度 |
 | `--min_cluster_size` | `int` | `10` | HDBSCAN の最小クラスタサイズ |
 | `--min_samples` | `int` | `None` | HDBSCAN の `min_samples`（未指定時はライブラリ既定挙動） |
-| `--selection_method` | `eom` | `eom` | HDBSCAN のクラスタ選択法 |
+| `--selection_method` | `eom` / `leaf` | `eom` | HDBSCAN のクラスタ選択法 |
 
 固定設定（`cluster_default_l2_eom_mcs10`）を明示する場合の実行例:
 
