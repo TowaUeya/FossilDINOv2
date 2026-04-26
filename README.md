@@ -220,7 +220,7 @@ python -m src.cluster_baseline \
   --normalize l2 \
   --min_cluster_size 10 \
   --min_samples 5 \
-  --selection_method leaf \
+  --selection_method eom \
   --auxiliary_method recursive \
   --max_depth 1
 ```
@@ -305,7 +305,7 @@ python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data
 python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/cluster_leaf/clusters.csv --out results/trees_leaf --selection_method leaf --single_linkage_truncate_mode lastp --single_linkage_p 30
 
 # recursive HDBSCAN の結果を重ねる例
-python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/cluster_recursive/clusters.csv --out results/trees_recursive --selection_method leaf --single_linkage_truncate_mode lastp --single_linkage_p 30
+python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/cluster_recursive/clusters.csv --out results/trees_recursive --selection_method eom --single_linkage_truncate_mode lastp --single_linkage_p 30
 
 # BranchDetector の subgroup を重ねる例
 python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/cluster_branches/clusters.csv --out results/trees_branch --selection_method eom --single_linkage_truncate_mode lastp --single_linkage_p 30
