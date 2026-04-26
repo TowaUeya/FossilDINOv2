@@ -65,6 +65,95 @@ def _fit_branch_detector(hdbscan_module: Any, clusterer: Any, detector_kwargs: d
     raise RuntimeError(f"Failed to initialize BranchDetector with compatible arguments: {last_error}")
 
 
+def _save_branch_persistences(persistences: Any, out_path: Path) -> None:
+    rows: list[dict[str, Any]] = []
+
+    if persistences is None:
+        pd.DataFrame(columns=["base_cluster_index", "branch_index", "branch_persistence"]).to_csv(out_path, index=False)
+        return
+
+    def _to_scalar(value: Any) -> Any:
+        if value is None:
+            return np.nan
+        arr = np.asarray(value)
+        if arr.ndim == 0:
+            item = arr.item()
+            if isinstance(item, np.generic):
+                return item.item()
+            return item
+        return json.dumps(arr.tolist(), ensure_ascii=False)
+
+    if isinstance(persistences, (list, tuple)):
+        for base_cluster_index, item in enumerate(persistences):
+            if item is None:
+                rows.append(
+                    {
+                        "base_cluster_index": base_cluster_index,
+                        "branch_index": np.nan,
+                        "branch_persistence": np.nan,
+                    }
+                )
+                continue
+
+            item_arr = np.asarray(item, dtype=object)
+            if item_arr.ndim == 0:
+                rows.append(
+                    {
+                        "base_cluster_index": base_cluster_index,
+                        "branch_index": 0,
+                        "branch_persistence": _to_scalar(item_arr),
+                    }
+                )
+            elif item_arr.ndim == 1:
+                for branch_index, value in enumerate(item_arr):
+                    rows.append(
+                        {
+                            "base_cluster_index": base_cluster_index,
+                            "branch_index": branch_index,
+                            "branch_persistence": _to_scalar(value),
+                        }
+                    )
+            else:
+                for branch_index, value in np.ndenumerate(item_arr):
+                    rows.append(
+                        {
+                            "base_cluster_index": base_cluster_index,
+                            "branch_index": ".".join(map(str, branch_index)),
+                            "branch_persistence": _to_scalar(value),
+                        }
+                    )
+    else:
+        arr = np.asarray(persistences, dtype=object)
+        if arr.ndim == 0:
+            rows.append(
+                {
+                    "base_cluster_index": 0,
+                    "branch_index": 0,
+                    "branch_persistence": _to_scalar(arr),
+                }
+            )
+        elif arr.ndim == 1:
+            for branch_index, value in enumerate(arr):
+                rows.append(
+                    {
+                        "base_cluster_index": np.nan,
+                        "branch_index": branch_index,
+                        "branch_persistence": _to_scalar(value),
+                    }
+                )
+        else:
+            for index, value in np.ndenumerate(arr):
+                rows.append(
+                    {
+                        "base_cluster_index": index[0],
+                        "branch_index": ".".join(map(str, index[1:])),
+                        "branch_persistence": _to_scalar(value),
+                    }
+                )
+
+    pd.DataFrame(rows).to_csv(out_path, index=False)
+
+
 def run_branch_detector(
     x: np.ndarray,
     ids: list[str],
@@ -117,6 +206,7 @@ def run_branch_detector(
         {
             "specimen_id": ids,
             "cluster_id": subgroup_labels,
+            "cluster": subgroup_labels,
             "prob": subgroup_probs,
         }
     ).to_csv(out_dir / "clusters.csv", index=False)
@@ -134,15 +224,7 @@ def run_branch_detector(
     ).to_csv(out_dir / "branch_labels.csv", index=False)
 
     persistences = getattr(branch_detector, "branch_persistences_", None)
-    if persistences is None:
-        pd.DataFrame(columns=["branch_persistence"]).to_csv(out_dir / "branch_persistences.csv", index=False)
-    else:
-        arr = np.asarray(persistences)
-        if arr.ndim == 1:
-            p_df = pd.DataFrame({"branch_persistence": arr})
-        else:
-            p_df = pd.DataFrame(arr)
-        p_df.to_csv(out_dir / "branch_persistences.csv", index=False)
+    _save_branch_persistences(persistences, out_dir / "branch_persistences.csv")
 
     n_base_clusters, base_noise_ratio = _cluster_count_and_noise(base_cluster_labels.astype(float))
     n_subgroups, subgroup_noise_ratio = _cluster_count_and_noise(subgroup_labels.astype(float))
