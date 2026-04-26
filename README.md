@@ -284,12 +284,15 @@ python -m src.explain_vit_attention --renders data/renders --features data/featu
 
 7. HDBSCAN tree 可視化
 ```bash
-python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --out results/trees --selection_method leaf --single_linkage_truncate_mode lastp --single_linkage_p 30
+python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --out results/trees --selection_method eom --single_linkage_truncate_mode lastp --single_linkage_p 30
 ```
 
 補助解析の結果を重ねて確認する場合は、`--clusters` に補助解析の `clusters.csv` を渡します（tree 自体は指定した HDBSCAN 設定から再計算されます）。
 
 ```bash
+# leaf
+python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/cluster_leaf/clusters.csv --out results/trees_leaf --selection_method leaf --single_linkage_truncate_mode lastp --single_linkage_p 30
+
 # recursive HDBSCAN の結果を重ねる例
 python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/cluster_recursive/clusters.csv --out results/trees_recursive --selection_method leaf --single_linkage_truncate_mode lastp --single_linkage_p 30
 
