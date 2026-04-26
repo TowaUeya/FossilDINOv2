@@ -277,6 +277,17 @@ python -m src.visualize_embedding_space --emb data/embeddings/embeddings.npy --i
 ```
 `results/vis/embedding_space_<method>_3d.html` をブラウザで開くと，マウスで回転・拡大縮小できる 3D インタラクティブ可視化を確認できます。
 
+```bash
+# leaf
+python -m src.visualize_embedding_space --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/cluster_leaf/clusters.csv --format both --out results/vis_leaf
+
+# recursive HDBSCAN の結果を重ねる例
+python -m src.visualize_embedding_space --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/cluster_recursive/clusters.csv --format both --out results/vis_recursive
+
+# BranchDetector の subgroup を重ねる例
+python -m src.visualize_embedding_space --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/cluster_branches/clusters.csv --format both --out results/vis_branches
+```
+
 6. ViT 根拠可視化
 ```bash
 python -m src.explain_vit_attention --renders data/renders --features data/features --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --out results/explain --image-size 518 --crop-size 518 --num-show 12
