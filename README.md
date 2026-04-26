@@ -121,7 +121,7 @@ python -m src.cluster_baseline \
   --metric euclidean \
   --normalize l2 \
   --min_cluster_size 10 \
-  --selection_method eom
+  --selection_method leaf
 ```
 
 5. 埋め込み空間可視化
@@ -137,7 +137,7 @@ python -m src.explain_vit_attention --renders data/renders --features data/featu
 
 7. HDBSCAN tree 可視化
 ```bash
-python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --out results/trees --single_linkage_truncate_mode lastp --single_linkage_p 30
+python -m src.plot_hdbscan_trees --emb data/embeddings/embeddings.npy --ids data/embeddings/ids.txt --clusters results/baseline_cluster/clusters.csv --out results/trees --selection_method leaf --single_linkage_truncate_mode lastp --single_linkage_p 30
 ```
 
 8. ラベルあり評価（検証のみ）
