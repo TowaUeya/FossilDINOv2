@@ -123,6 +123,7 @@ python -m src.cluster_baseline \
   --metric euclidean \
   --normalize l2 \
   --min_cluster_size 10 \
+  --min_samples 5 \
   --selection_method eom
 ```
 
